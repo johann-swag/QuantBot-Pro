@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"print\\(4*4*3*4*3\\)\")",
+      "Bash(.venv/bin/python3 optimize.py --symbol BTC/USDT --days 365)",
+      "Bash(.venv/bin/uv pip *)",
+      "Bash(.venv/bin/python3 dashboard.py)",
+      "Bash(curl -s http://localhost:5000/api/backtest)",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s http://localhost:5000/api/walkforward)",
+      "Bash(curl -s http://localhost:5000/)",
+      "Bash(.venv/bin/python3 -c \"import bot; print\\('bot.py OK'\\)\")",
+      "Bash(.venv/bin/python3 -c \"import telegram_bot; print\\('telegram_bot.py OK'\\)\")",
+      "Bash(.venv/bin/python3 telegram_bot.py)",
+      "Bash(.venv/bin/python3 strategies/mean_reversion.py)",
+      "Bash(.venv/bin/python3 bot.py --backtest --strategy trend --symbol BTC/USDT --days 365)",
+      "Bash(.venv/bin/python3 bot.py --backtest --strategy mean_reversion --symbol BTC/USDT --days 365)",
+      "Bash(.venv/bin/python3 optimize.py --strategy mean_reversion --symbol BTC/USDT --days 365 --min-trades 10 --max-dd -8.0 --min-pf 1.0)",
+      "Bash(python3 walk_forward.py --strategy trend)"
+    ]
+  }
+}

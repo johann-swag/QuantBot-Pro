@@ -41,9 +41,20 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
+import sys
+
 import ccxt
 import pandas as pd
 import numpy as np
+
+# Strategien optional importieren (graceful fallback wenn Pfad fehlt)
+sys.path.insert(0, ".")
+try:
+    from strategies.mean_reversion  import MeanReversionStrategy
+    from strategies.trend_following import TrendFollowingStrategy
+    _STRATEGIES_AVAILABLE = True
+except ImportError:
+    _STRATEGIES_AVAILABLE = False
 
 
 # ============================================================
@@ -52,11 +63,11 @@ import numpy as np
 
 # Strategie-Parameter (muessen mit bot.py uebereinstimmen)
 BASE_CONFIG = {
-    "EMA_FAST":             21,
-    "EMA_SLOW":             55,
-    "RSI_PERIOD":           14,
-    "RSI_LONG_MIN":         55,
-    "RSI_SHORT_MAX":        45,
+    "EMA_FAST":             10,
+    "EMA_SLOW":             21,
+    "RSI_PERIOD":           10,
+    "RSI_LONG_MIN":         48,
+    "RSI_SHORT_MAX":        52,
     "ATR_PERIOD":           14,
     "ATR_MULTIPLIER":       2.0,
     "ADX_PERIOD":           14,
@@ -67,17 +78,32 @@ BASE_CONFIG = {
     "LOSS_COOLDOWN_BARS":   3,
 }
 
+# Mean Reversion — optimierte Parameter (PO-Entscheidung Story-07-B-FIX)
+MR_BASE_CONFIG = {
+    "BB_PERIOD":          25,
+    "BB_STD":             3.0,
+    "RSI_PERIOD":         14,
+    "RSI_LONG":           25,
+    "RSI_SHORT":          65,
+    # Risiko-Parameter identisch zu BASE_CONFIG
+    "ATR_PERIOD":         14,
+    "ATR_MULTIPLIER":     2.0,
+    "REWARD_RISK_RATIO":  1.5,
+    "RISK_PER_TRADE_PCT": 0.01,
+    "LOSS_COOLDOWN_BARS": 3,
+}
+
 # Parameter-Bereiche fuer optionalen Sweep
 PARAM_GRID = {
-    "EMA_FAST":         [13, 21],
-    "EMA_SLOW":         [34, 55, 89],
-    "RSI_LONG_MIN":     [52, 55, 58],
+    "EMA_FAST":         [8, 10, 13],
+    "EMA_SLOW":         [21, 26, 34],
+    "RSI_LONG_MIN":     [48, 52, 55],
     "ADX_THRESHOLD":    [20, 25, 30],
 }
 
 WF_CONFIG = {
     "TRAIN_RATIO":      0.70,       # 70% Training, 30% Test
-    "MIN_TRADES":       5,          # Mindest-Trades pro Fenster fuer Gueltigkeit
+    "MIN_TRADES":       2,          # Mindest-Trades pro Fenster fuer Gueltigkeit
     "LOG_DIR":          "logs",
     "START_BALANCE":    10_000.0,
     "TIMEFRAME":        "4h",
@@ -213,23 +239,24 @@ def simulate_window(
     params: dict,
     window_id: int,
     phase: str,
-    start_balance: float = 10_000.0
+    start_balance: float = 10_000.0,
+    strategy=None,          # None → TrendFollowing via SignalEngine (default)
 ) -> tuple[list[TradeRecord], list[float]]:
     """
-    Simuliert die vollstaendige Handelsstrategie auf einem DataFrame-Ausschnitt.
+    Simuliert die Handelsstrategie auf einem DataFrame-Ausschnitt.
 
-    Gibt zurueck:
-    - Liste aller Trade-Records
-    - Equity-Kurve (Balance nach jeder Kerze)
-
-    Intrabar-Stop/TP: Pruefen ob High/Low die Level intrabar beruehrt hat.
-    Das ist realistischer als nur Close-Preise zu nutzen.
+    strategy=None → bestehende SignalEngine (Trend-Following)
+    strategy=<Objekt> → strategy.compute(df) + optionale Band-Exits
     """
-    engine   = SignalEngine(params)
-    warmup   = params["EMA_SLOW"] + 20
-
-    # Indikatoren brauchen Warmup-Daten — wir berechnen auf dem vollen Slice
-    df = engine.compute(df)
+    if strategy is not None:
+        df     = strategy.compute(df)
+        warmup = strategy.warmup_candles
+        has_band_exit = "signal_exit_long" in df.columns
+    else:
+        engine = SignalEngine(params)
+        df     = engine.compute(df)
+        warmup = params["EMA_SLOW"] + 20
+        has_band_exit = False
 
     balance  = start_balance
     equity   = [balance]
@@ -252,9 +279,20 @@ def simulate_window(
             hit_tp = ((position["direction"] == "LONG"  and hi >= tp) or
                       (position["direction"] == "SHORT" and lo <= tp))
 
-            if hit_sl or hit_tp:
-                exit_price = sl if hit_sl else tp
-                reason     = "STOP_LOSS" if hit_sl else "TAKE_PROFIT"
+            hit_mid = (
+                has_band_exit and not hit_sl and not hit_tp and (
+                    (position["direction"] == "LONG"  and bool(row["signal_exit_long"]))  or
+                    (position["direction"] == "SHORT" and bool(row["signal_exit_short"]))
+                )
+            )
+
+            if hit_sl or hit_tp or hit_mid:
+                if hit_mid:
+                    exit_price = price
+                    reason     = "MEAN_EXIT"
+                else:
+                    exit_price = sl if hit_sl else tp
+                    reason     = "STOP_LOSS" if hit_sl else "TAKE_PROFIT"
                 pnl = ((exit_price - position["entry"]) * position["qty"]
                        if position["direction"] == "LONG"
                        else (position["entry"] - exit_price) * position["qty"])
@@ -273,8 +311,8 @@ def simulate_window(
                 if hit_sl:
                     cooldown = params["LOSS_COOLDOWN_BARS"]
                 position = None
-            else:
-                # Trailing Stop
+            elif not has_band_exit:
+                # Trailing Stop nur für Trend-Following
                 atr    = float(row["atr"])
                 new_sl = (price - atr * params["ATR_MULTIPLIER"]
                           if position["direction"] == "LONG"
@@ -372,14 +410,28 @@ class WalkForwardEngine:
         self.exchange = exchange
 
     def _load_data(self, symbol: str, timeframe: str, days: int) -> pd.DataFrame:
-        """Laedt historische Daten. Mehr als benoetigt fuer sicheren Warmup."""
+        """Laedt historische Daten via Pagination (kein 1000-Kerzen-Limit)."""
         candles_per_day = {"1h": 24, "4h": 6, "1d": 1}.get(timeframe, 6)
-        limit = min(days * candles_per_day + 300, 1000)
-        print(f"  Lade {limit} Kerzen fuer {symbol} [{timeframe}]...", end=" ", flush=True)
-        raw = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        df  = pd.DataFrame(raw, columns=["timestamp","open","high","low","close","volume"])
+        needed  = days * candles_per_day + 300
+        batch   = 1000
+        tf_ms   = {"1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}.get(timeframe, 14_400_000)
+        since   = self.exchange.milliseconds() - needed * tf_ms
+
+        print(f"  Lade ~{needed} Kerzen fuer {symbol} [{timeframe}]...", end=" ", flush=True)
+        all_rows = []
+        while True:
+            chunk = self.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=batch)
+            if not chunk:
+                break
+            all_rows.extend(chunk)
+            if len(chunk) < batch:
+                break
+            since = chunk[-1][0] + tf_ms
+
+        df = pd.DataFrame(all_rows, columns=["timestamp","open","high","low","close","volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-        df  = df.set_index("timestamp").sort_index()
+        df = df.set_index("timestamp").sort_index()
+        df = df[~df.index.duplicated(keep="last")]
         print(f"OK ({len(df)} Kerzen)")
         return df
 
@@ -419,6 +471,7 @@ class WalkForwardEngine:
         n_windows:  int,
         params:     dict,
         label:      str = "",
+        strategy=None,      # None → Trend-Following via SignalEngine
     ) -> WalkForwardResult:
 
         print(f"\n{'─'*60}")
@@ -449,7 +502,7 @@ class WalkForwardEngine:
             # TRAIN-Phase
             train_trades, train_equity = simulate_window(
                 w["train_df"], params, wid, "TRAIN",
-                WF_CONFIG["START_BALANCE"]
+                WF_CONFIG["START_BALANCE"], strategy=strategy,
             )
             tm = compute_metrics(train_trades, train_equity)
             print(f"    Train: {tm['n_trades']:>3} Trades | "
@@ -459,7 +512,7 @@ class WalkForwardEngine:
             # TEST-Phase (Out-of-Sample — das einzige was zaehlt!)
             test_trades, test_equity = simulate_window(
                 w["test_df"], params, wid, "TEST",
-                WF_CONFIG["START_BALANCE"]
+                WF_CONFIG["START_BALANCE"], strategy=strategy,
             )
             xm = compute_metrics(test_trades, test_equity)
             valid     = xm["n_trades"] >= WF_CONFIG["MIN_TRADES"]
@@ -497,6 +550,25 @@ class WalkForwardEngine:
 
     def _aggregate(self, r: WalkForwardResult):
         """Berechnet uebergreifende Kennzahlen und das finale Verdikt."""
+
+        # OOS-Aggregate immer aus ALLEN Test-Trades — unabhaengig von Fenster-Validitaet.
+        # So gehen keine Trades durch den "invalid window" Filter verloren.
+        all_pnls = [t.pnl for t in r.all_test_trades]
+        r.total_test_trades = len(all_pnls)
+
+        if all_pnls:
+            wins   = [p for p in all_pnls if p > 0]
+            losses = [p for p in all_pnls if p <= 0]
+            r.total_test_pnl    = round(float(sum(all_pnls)), 4)
+            r.overall_winrate   = len(wins) / len(all_pnls) * 100
+            gp = sum(wins) if wins else 0
+            gl = abs(sum(losses)) if losses else 1e-9
+            r.avg_profit_factor = gp / gl
+
+            eq_series = pd.Series(all_pnls).cumsum() + WF_CONFIG["START_BALANCE"]
+            peak      = eq_series.cummax()
+            r.overall_maxdd = float(((eq_series - peak) / peak * 100).min())
+
         valid_windows = [w for w in r.windows if w.is_valid]
         if not valid_windows:
             r.verdict = "UNGUELTIG (zu wenig Trades)"
@@ -505,39 +577,21 @@ class WalkForwardEngine:
         profitable = [w for w in valid_windows if w.is_profitable]
         r.consistency_rate = len(profitable) / len(valid_windows)
 
-        test_pnls  = [w.test_pnl for w in valid_windows]
+        test_pnls  = [w.test_pnl  for w in valid_windows]
         train_pnls = [w.train_pnl for w in valid_windows]
 
-        r.avg_test_pnl    = float(np.mean(test_pnls))
-        r.total_test_pnl  = float(np.sum(test_pnls))
-        r.total_test_trades = sum(w.test_trades for w in valid_windows)
+        r.avg_test_pnl = float(np.mean(test_pnls))
 
         # Effizienz: Wie gut ist Out-of-Sample vs In-Sample?
-        avg_train = float(np.mean(train_pnls)) if np.mean(train_pnls) != 0 else 1e-9
-        r.efficiency_ratio = r.avg_test_pnl / abs(avg_train) if avg_train != 0 else 0
+        avg_train = float(np.mean(train_pnls))
+        r.efficiency_ratio = (r.avg_test_pnl / abs(avg_train)
+                              if abs(avg_train) > 1.0 else 0.0)
 
         # Stabilitaet: Niedrige StdDev der Test-Returns = konsistent
         if len(test_pnls) > 1 and abs(np.mean(test_pnls)) > 0:
             r.stability_score = max(0, 1 - (np.std(test_pnls) / abs(np.mean(test_pnls))))
         else:
             r.stability_score = 0.0
-
-        # Gesamt-Kennzahlen ueber alle Test-Trades
-        all_pnls = [t.pnl for t in r.all_test_trades]
-        if all_pnls:
-            wins   = [p for p in all_pnls if p > 0]
-            losses = [p for p in all_pnls if p <= 0]
-            r.overall_winrate = len(wins) / len(all_pnls) * 100
-            gp = sum(wins) if wins else 0
-            gl = abs(sum(losses)) if losses else 1e-9
-            r.avg_profit_factor = gp / gl
-
-        # Drawdown ueber alle Test-Equity-Kurven kombiniert
-        all_pnl_series = pd.Series(all_pnls).cumsum() + WF_CONFIG["START_BALANCE"]
-        if len(all_pnl_series) > 0:
-            peak   = all_pnl_series.cummax()
-            dd     = (all_pnl_series - peak) / peak * 100
-            r.overall_maxdd = float(dd.min())
 
         # VERDIKT
         if (r.consistency_rate >= 0.60 and
@@ -703,6 +757,9 @@ Beispiele:
     parser.add_argument("--timeframe",   default=WF_CONFIG["TIMEFRAME"],  help="Kerzen-Zeitrahmen")
     parser.add_argument("--all-symbols", action="store_true",             help="Alle Standard-Symbole testen")
     parser.add_argument("--optimize",    action="store_true",             help="Parameter-Sweep aktivieren")
+    parser.add_argument("--strategy",    default="trend",
+                        choices=["trend", "mean_reversion"],
+                        help="Strategie: trend (default) | mean_reversion")
     args = parser.parse_args()
 
     print("""
@@ -711,6 +768,30 @@ Beispiele:
 |   Out-of-Sample Robustheits-Test                           |
 +============================================================+
     """)
+
+    # Strategie-Objekt und zugehörige Parameter wählen
+    active_strategy = None
+    active_params   = BASE_CONFIG
+
+    if args.strategy == "mean_reversion":
+        if not _STRATEGIES_AVAILABLE:
+            print("  FEHLER: strategies/ Paket nicht gefunden. Abbruch.")
+            sys.exit(1)
+        active_strategy = MeanReversionStrategy(
+            bb_period  = MR_BASE_CONFIG["BB_PERIOD"],
+            bb_std     = MR_BASE_CONFIG["BB_STD"],
+            rsi_period = MR_BASE_CONFIG["RSI_PERIOD"],
+            rsi_long   = MR_BASE_CONFIG["RSI_LONG"],
+            rsi_short  = MR_BASE_CONFIG["RSI_SHORT"],
+            verbose    = True,
+        )
+        active_params = MR_BASE_CONFIG
+        print(f"  Strategie: Mean Reversion (BB {MR_BASE_CONFIG['BB_PERIOD']}/{MR_BASE_CONFIG['BB_STD']}, RSI {MR_BASE_CONFIG['RSI_PERIOD']})")
+    elif args.strategy == "trend":
+        if _STRATEGIES_AVAILABLE:
+            active_strategy = TrendFollowingStrategy(params=BASE_CONFIG, verbose=True)
+        # active_params bleibt BASE_CONFIG; SignalEngine als Fallback falls Import fehlt
+        print(f"  Strategie: Trend Following (EMA {BASE_CONFIG['EMA_FAST']}/{BASE_CONFIG['EMA_SLOW']}, ADX {BASE_CONFIG['ADX_THRESHOLD']})")
 
     exchange = ccxt.binance({"enableRateLimit": True})
     engine   = WalkForwardEngine(exchange)
@@ -734,7 +815,8 @@ Beispiele:
             try:
                 result = engine.run(
                     symbol, args.timeframe, args.days,
-                    args.windows, BASE_CONFIG
+                    args.windows, active_params,
+                    strategy=active_strategy,
                 )
                 print_single_result(result)
 

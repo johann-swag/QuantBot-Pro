@@ -1,9 +1,9 @@
 # KRITISCH: API-Keys niemals committen!
 .env
 
-# Logs (enthalten Trade-Details)
-*.json
-bot_log.json
+# Logs (enthalten Trade-Details und Equity-Daten)
+logs/
+*.jsonl
 
 # Python
 __pycache__/

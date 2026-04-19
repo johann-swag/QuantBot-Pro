@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip3 --version)",
+      "Bash(python3 -m pip --version)",
+      "Bash(python3 -m pip show ccxt pandas numpy python-dotenv)",
+      "Bash(python3 -c \"import ccxt\")",
+      "Bash(python3 -c \"import venv; print\\('venv ok'\\)\")",
+      "Bash(uv venv *)",
+      "Bash(uv pip *)",
+      "Bash(.venv/bin/python3 -c \"import ccxt, pandas, numpy, dotenv; print\\('All imports OK'\\)\")",
+      "Bash(mkdir -p logs)",
+      "Bash(.venv/bin/python3 bot.py --help)",
+      "Bash(timeout 30 .venv/bin/python3 bot.py --backtest --symbol BTC/USDT --days 30)",
+      "Bash(.venv/bin/python3 bot.py --backtest --symbol BTC/USDT --days 90)",
+      "Bash(.venv/bin/python3 bot.py --backtest --symbol BTC/USDT --days 365)",
+      "Bash(.venv/bin/python3 walk_forward.py)"
+    ]
+  }
+}

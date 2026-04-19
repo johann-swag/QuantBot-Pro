@@ -66,11 +66,11 @@ CONFIG = {
     "MAX_CONSECUTIVE_LOSSES":   3,      # Stopp nach 3 Verlusten in Folge
 
     # --- Strategie ---
-    "EMA_FAST":             21,
-    "EMA_SLOW":             55,
-    "RSI_PERIOD":           14,
-    "RSI_LONG_MIN":         55,
-    "RSI_SHORT_MAX":        45,
+    "EMA_FAST":             10,
+    "EMA_SLOW":             21,
+    "RSI_PERIOD":           10,
+    "RSI_LONG_MIN":         48,
+    "RSI_SHORT_MAX":        52,
     "ATR_PERIOD":           14,
     "ADX_PERIOD":           14,
     "ADX_THRESHOLD":        25,
@@ -498,23 +498,49 @@ class Backtester:
       python bot.py --backtest
       python bot.py --backtest --symbol ETH/USDT --days 180
     """
-    def __init__(self, exchange: ccxt.Exchange):
+    def __init__(self, exchange: ccxt.Exchange, strategy=None):
         self.exchange   = exchange
         self.signal_gen = SignalGenerator()
+        self.strategy   = strategy   # None → Trend-Following (default)
 
     def run(self, symbol: str, timeframe: str, days: int, start_balance: float = 10_000.0):
+        strategy_label = (
+            type(self.strategy).__name__ if self.strategy else "TrendFollowing"
+        )
         print(f"\n{'='*60}")
         print(f"  BACKTEST: {symbol} | {timeframe} | {days} Tage")
+        print(f"  Strategie:    {strategy_label}")
         print(f"  Startkapital: {start_balance:.2f} USDT")
         print(f"{'='*60}\n")
 
-        # Daten laden
-        limit = min(days * 6 + 100, 1000)
-        raw   = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        df    = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        # Daten laden via Pagination (kein 1000-Kerzen-Limit)
+        candles_per_day = {"1h": 24, "4h": 6, "1d": 1}.get(timeframe, 6)
+        needed  = days * candles_per_day + 100
+        tf_ms   = {"1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}.get(timeframe, 14_400_000)
+        since   = self.exchange.milliseconds() - needed * tf_ms
+        all_rows = []
+        while True:
+            chunk = self.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=1000)
+            if not chunk:
+                break
+            all_rows.extend(chunk)
+            if len(chunk) < 1000:
+                break
+            since = chunk[-1][0] + tf_ms
+        df = pd.DataFrame(all_rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
         df    = df.set_index("timestamp").sort_index()
-        df    = self.signal_gen.generate(df)
+        df    = df[~df.index.duplicated(keep="last")]
+
+        # Strategie-agnostische Signal-Berechnung
+        if self.strategy is not None:
+            df     = self.strategy.compute(df)
+            warmup = self.strategy.warmup_candles
+            has_band_exit = "signal_exit_long" in df.columns
+        else:
+            df     = self.signal_gen.generate(df)
+            warmup = CONFIG["EMA_SLOW"] + 20
+            has_band_exit = False
 
         # Simulation
         balance  = start_balance
@@ -522,7 +548,6 @@ class Backtester:
         trades   = []
         position = None
         cooldown = 0
-        warmup   = CONFIG["EMA_SLOW"] + 20
 
         for i in range(warmup, len(df) - 1):
             row   = df.iloc[i]
@@ -537,34 +562,48 @@ class Backtester:
                 hit_tp = ((position["direction"] == "LONG"  and hi >= tp) or
                           (position["direction"] == "SHORT" and lo <= tp))
 
-                if hit_sl or hit_tp:
-                    exit_price = sl if hit_sl else tp
-                    reason     = "STOP_LOSS" if hit_sl else "TAKE_PROFIT"
+                # Mean-Reversion: Mittellinie erreicht → Exit zum Close-Preis
+                hit_band_exit = (
+                    has_band_exit and not hit_sl and not hit_tp and (
+                        (position["direction"] == "LONG"  and bool(row["signal_exit_long"]))  or
+                        (position["direction"] == "SHORT" and bool(row["signal_exit_short"]))
+                    )
+                )
+
+                if hit_sl or hit_tp or hit_band_exit:
+                    if hit_band_exit:
+                        exit_price = price
+                        reason     = "MEAN_EXIT"
+                    else:
+                        exit_price = sl if hit_sl else tp
+                        reason     = "STOP_LOSS" if hit_sl else "TAKE_PROFIT"
                     pnl = ((exit_price - position["entry"]) * position["qty"] if position["direction"] == "LONG"
                            else (position["entry"] - exit_price) * position["qty"])
                     balance += pnl
                     trades.append({
-                        "entry_time": position["entry_time"],
-                        "exit_time":  str(row.name),
-                        "symbol":     symbol,
-                        "direction":  position["direction"],
-                        "entry":      round(position["entry"], 4),
-                        "exit":       round(exit_price, 4),
-                        "pnl":        round(pnl, 4),
-                        "reason":     reason,
+                        "entry_time":  position["entry_time"],
+                        "exit_time":   str(row.name),
+                        "symbol":      symbol,
+                        "direction":   position["direction"],
+                        "entry":       round(position["entry"], 4),
+                        "exit":        round(exit_price, 4),
+                        "pnl":         round(pnl, 4),
+                        "risk_amount": round(position["risk_amount"], 4),
+                        "reason":      reason,
                     })
                     if hit_sl:
                         cooldown = CONFIG["LOSS_COOLDOWN_BARS"]
                     position = None
                 else:
-                    # Trailing Stop
-                    atr    = float(row["atr"])
-                    new_sl = (price - atr * CONFIG["ATR_MULTIPLIER"] if position["direction"] == "LONG"
-                              else price + atr * CONFIG["ATR_MULTIPLIER"])
-                    if position["direction"] == "LONG" and new_sl > position["stop_loss"]:
-                        position["stop_loss"] = new_sl
-                    elif position["direction"] == "SHORT" and new_sl < position["stop_loss"]:
-                        position["stop_loss"] = new_sl
+                    # Trailing Stop (nur Trend-Following; Mean Reversion nutzt festen SL)
+                    if not has_band_exit:
+                        atr    = float(row["atr"])
+                        new_sl = (price - atr * CONFIG["ATR_MULTIPLIER"] if position["direction"] == "LONG"
+                                  else price + atr * CONFIG["ATR_MULTIPLIER"])
+                        if position["direction"] == "LONG" and new_sl > position["stop_loss"]:
+                            position["stop_loss"] = new_sl
+                        elif position["direction"] == "SHORT" and new_sl < position["stop_loss"]:
+                            position["stop_loss"] = new_sl
 
             elif cooldown > 0:
                 cooldown -= 1
@@ -578,9 +617,10 @@ class Backtester:
                 tp  = price + stop_dist * CONFIG["REWARD_RISK_RATIO"] if direction == "LONG" \
                       else price - stop_dist * CONFIG["REWARD_RISK_RATIO"]
                 position = {
-                    "direction": direction, "entry": price,
-                    "entry_time": str(row.name), "qty": qty,
-                    "stop_loss": sl, "take_profit": tp,
+                    "direction":   direction, "entry": price,
+                    "entry_time":  str(row.name), "qty": qty,
+                    "stop_loss":   sl, "take_profit": tp,
+                    "risk_amount": balance * CONFIG["RISK_PER_TRADE_PCT"],
                 }
 
             equity.append(balance)
@@ -606,9 +646,14 @@ class Backtester:
         gl = abs(losses["pnl"].sum()) if len(losses) > 0 else 1
         pf = gp / gl if gl > 0 else float("inf")
 
-        avg_w  = wins["pnl"].mean()   if len(wins)   > 0 else 0
-        avg_l  = abs(losses["pnl"].mean()) if len(losses) > 0 else 1
-        avg_rr = avg_w / avg_l if avg_l > 0 else 0
+        # RR = avg winner PnL / initial risk taken (1R = one unit of risk)
+        if len(wins) > 0 and "risk_amount" in wins.columns:
+            avg_rr = (wins["pnl"] / wins["risk_amount"]).mean()
+        elif len(wins) > 0 and len(losses) > 0:
+            avg_l  = abs(losses["pnl"].mean())
+            avg_rr = wins["pnl"].mean() / avg_l if avg_l > 0.01 else 0
+        else:
+            avg_rr = 0
 
         total_ret   = (end_bal - start_bal) / start_bal * 100
         monthly_ret = total_ret / (days / 30)
@@ -883,15 +928,247 @@ def run_bot():
 
 
 # ============================================================
+# 13. PAPER TRADING MODE
+# ============================================================
+
+def run_paper_trading(symbol: str, start_balance: float = 10_000.0):
+    """
+    Paper Trading: Echte Live-Preise von Binance (kein API-Key nötig),
+    simulierte Order-Ausführung, Telegram Alerts, Circuit Breaker.
+
+    SICHERHEITS-GARANTIEN:
+    - Kein API-Key / Secret → kein echter Order möglich
+    - DRY_RUN wird programmatisch erzwungen
+    - Paper-Trades werden in logs/paper_trades.json gespeichert
+    """
+    # Telegram aus dem dedizierten Modul
+    try:
+        from telegram_bot import TelegramAlert, start_daily_summary_scheduler
+        alert = TelegramAlert()
+    except ImportError:
+        # Fallback: interner Notifier (kein Daily-Summary)
+        alert = None
+
+    # DRY_RUN zwingend aktiv — kann nicht überschrieben werden
+    CONFIG["DRY_RUN"] = True
+
+    Path(CONFIG["LOG_DIR"]).mkdir(exist_ok=True)
+    paper_log_path = Path(CONFIG["LOG_DIR"]) / "paper_trades.json"
+
+    logger    = StructuredLogger(CONFIG["LOG_DIR"], symbol)
+    sig_gen   = SignalGenerator()
+    ingestion = DataIngestion(
+        ccxt.binance({"enableRateLimit": True}),  # KEIN API-Key → read-only
+        logger,
+    )
+
+    # Lokaler State
+    state = {
+        "balance":     start_balance,
+        "session_pnl": 0.0,
+        "wins":        0,
+        "losses":      0,
+        "position":    None,
+        "cooldown":    0,
+        "last_bar":    None,
+        "symbol":      symbol,
+        "open_position": None,
+    }
+
+    consecutive_losses = 0
+    daily_pnl          = 0.0
+    circuit_tripped    = False
+    paper_trades       = []
+
+    def _get_stats():
+        return {
+            "symbol":      symbol,
+            "session_pnl": state["session_pnl"],
+            "wins":        state["wins"],
+            "losses":      state["losses"],
+            "balance":     state["balance"],
+            "open_position": state["position"],
+        }
+
+    def _save_paper_trade(trade: dict):
+        paper_trades.append(trade)
+        with open(paper_log_path, "w") as f:
+            json.dump(paper_trades, f, indent=2)
+
+    # Daily-Summary Thread starten (20:00 UTC)
+    if alert:
+        start_daily_summary_scheduler(alert, _get_stats, hour_utc=20)
+        alert.bot_started([symbol], "PAPER TRADING")
+
+    logger.info(f"Paper Trading gestartet: {symbol} | Balance: {start_balance:.2f} USDT")
+    logger.info("SICHERHEIT: DRY_RUN=True erzwungen — kein echter Order möglich")
+
+    print(f"\n  Symbol:    {symbol}")
+    print(f"  Balance:   {start_balance:,.2f} USDT (simuliert)")
+    print(f"  Telegram:  {'aktiv' if (alert and alert.enabled) else 'deaktiviert'}")
+    print(f"  Log:       {paper_log_path}")
+    print(f"  Stop:      CTRL+C\n")
+
+    while True:
+        try:
+            if circuit_tripped:
+                logger.warning("Circuit Breaker aktiv — warte auf naechsten Tag")
+                time.sleep(CONFIG["LOOP_INTERVAL_SEC"])
+                continue
+
+            df     = ingestion.fetch_ohlcv(symbol, CONFIG["TIMEFRAME"], CONFIG["WARMUP_CANDLES"])
+            df_sig = sig_gen.generate(df)
+            signal = sig_gen.get_latest(df_sig)
+
+            current_bar = df.index[-2]
+            if current_bar == state["last_bar"]:
+                time.sleep(CONFIG["LOOP_INTERVAL_SEC"])
+                continue
+            state["last_bar"] = current_bar
+
+            price = signal["close"]
+
+            # ── Offene Position überwachen ──────────────────
+            pos = state["position"]
+            if pos:
+                hit_sl = (price <= pos["stop_loss"]  if pos["direction"] == "LONG"
+                          else price >= pos["stop_loss"])
+                hit_tp = (price >= pos["take_profit"] if pos["direction"] == "LONG"
+                          else price <= pos["take_profit"])
+
+                # Trailing Stop aktualisieren
+                atr    = signal["atr"]
+                new_sl = (price - atr * CONFIG["ATR_MULTIPLIER"] if pos["direction"] == "LONG"
+                          else price + atr * CONFIG["ATR_MULTIPLIER"])
+                if pos["direction"] == "LONG" and new_sl > pos["stop_loss"]:
+                    pos["stop_loss"] = new_sl
+                elif pos["direction"] == "SHORT" and new_sl < pos["stop_loss"]:
+                    pos["stop_loss"] = new_sl
+
+                if hit_sl or hit_tp:
+                    reason     = "STOP_LOSS" if hit_sl else "TAKE_PROFIT"
+                    exit_price = pos["stop_loss"] if hit_sl else pos["take_profit"]
+                    pnl        = ((exit_price - pos["entry_price"]) * pos["quantity"]
+                                  if pos["direction"] == "LONG"
+                                  else (pos["entry_price"] - exit_price) * pos["quantity"])
+                    state["balance"]     += pnl
+                    state["session_pnl"] += pnl
+                    daily_pnl            += pnl
+
+                    if pnl > 0:
+                        state["wins"] += 1
+                        consecutive_losses = 0
+                    else:
+                        state["losses"]    += 1
+                        consecutive_losses += 1
+                        state["cooldown"]   = CONFIG["LOSS_COOLDOWN_BARS"]
+
+                    trade_record = {
+                        "timestamp":   datetime.now(timezone.utc).isoformat(),
+                        "symbol":      symbol,
+                        "direction":   pos["direction"],
+                        "entry_price": round(pos["entry_price"], 4),
+                        "exit_price":  round(exit_price, 4),
+                        "quantity":    round(pos["quantity"], 6),
+                        "pnl":         round(pnl, 4),
+                        "reason":      reason,
+                        "balance":     round(state["balance"], 2),
+                    }
+                    _save_paper_trade(trade_record)
+
+                    if alert:
+                        alert.trade_exit(symbol, pos["direction"], pnl,
+                                         reason, state["balance"])
+
+                    logger.trade("CLOSE", symbol=symbol, pnl=round(pnl, 4),
+                                 reason=reason, balance=round(state["balance"], 2))
+                    state["position"] = None
+
+                    # Circuit Breaker prüfen
+                    if consecutive_losses >= CONFIG["MAX_CONSECUTIVE_LOSSES"]:
+                        circuit_tripped = True
+                        cb_reason = f"{consecutive_losses} Verluste in Folge"
+                        logger.warning(f"CIRCUIT BREAKER: {cb_reason}")
+                        if alert:
+                            alert.circuit_breaker(cb_reason, consecutive_losses,
+                                                  daily_pnl, state["balance"])
+
+            # ── Neuen Trade eröffnen? ───────────────────────
+            elif signal["direction"] != "NONE" and state["cooldown"] <= 0:
+                direction = signal["direction"]
+                atr       = signal["atr"]
+                if atr > 0:
+                    stop_dist = atr * CONFIG["ATR_MULTIPLIER"]
+                    risk_amt  = state["balance"] * CONFIG["RISK_PER_TRADE_PCT"]
+                    qty       = risk_amt / stop_dist
+                    sl  = price - stop_dist if direction == "LONG" else price + stop_dist
+                    tp  = price + stop_dist * CONFIG["REWARD_RISK_RATIO"] if direction == "LONG" \
+                          else price - stop_dist * CONFIG["REWARD_RISK_RATIO"]
+
+                    if sl > 0:
+                        state["position"] = {
+                            "direction":   direction,
+                            "entry_price": price,
+                            "quantity":    qty,
+                            "stop_loss":   sl,
+                            "take_profit": tp,
+                            "risk_amount": risk_amt,
+                        }
+                        if alert:
+                            alert.trade_entry(symbol, direction, price,
+                                              sl, tp, qty, risk_amt)
+                        logger.trade("OPEN", symbol=symbol, direction=direction,
+                                     price=price, sl=sl, tp=tp)
+
+            elif state["cooldown"] > 0:
+                state["cooldown"] -= 1
+
+            # ── Terminal-Status ─────────────────────────────
+            pos_str = (f"OPEN {state['position']['direction']} @ "
+                       f"{state['position']['entry_price']:.2f}"
+                       if state["position"] else "Keine Position")
+            pnl_sign = "+" if state["session_pnl"] >= 0 else ""
+            print(f"\r  [{datetime.now(timezone.utc).strftime('%H:%M:%S')}]  "
+                  f"{symbol}  {price:.2f}  |  "
+                  f"PnL: {pnl_sign}{state['session_pnl']:.2f} USDT  |  "
+                  f"W:{state['wins']} L:{state['losses']}  |  "
+                  f"{pos_str}      ", end="", flush=True)
+
+        except KeyboardInterrupt:
+            print("\n")
+            logger.info("Paper Trading gestoppt (CTRL+C)")
+            if alert:
+                open_pos = state["position"]
+                if open_pos:
+                    logger.warning(f"Offene Paper-Position: {open_pos['direction']} @ "
+                                   f"{open_pos['entry_price']:.2f}")
+                alert.bot_stopped("Manuell gestoppt (CTRL+C)")
+            print(f"\n  Session-PnL:  {state['session_pnl']:+.2f} USDT")
+            print(f"  Trades:       {state['wins'] + state['losses']} "
+                  f"(W:{state['wins']} / L:{state['losses']})")
+            print(f"  Endbalance:   {state['balance']:.2f} USDT")
+            print(f"  Log gespeichert: {paper_log_path}\n")
+            break
+        except Exception as e:
+            logger.error(f"Paper-Trading Fehler: {e}\n{traceback.format_exc()}")
+
+        time.sleep(CONFIG["LOOP_INTERVAL_SEC"])
+
+
+# ============================================================
 # EINSTIEGSPUNKT & CLI
 # ============================================================
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Disciplined Trading Bot v2.0")
     parser.add_argument("--backtest", action="store_true",          help="Backtest starten")
-    parser.add_argument("--symbol",   default="BTC/USDT",           help="Symbol fuer Backtest")
+    parser.add_argument("--paper",    action="store_true",          help="Paper Trading mit Live-Preisen")
+    parser.add_argument("--symbol",   default="BTC/USDT",           help="Symbol fuer Backtest / Paper Trading")
     parser.add_argument("--days",     type=int,   default=365,      help="Backtest-Zeitraum in Tagen")
-    parser.add_argument("--balance",  type=float, default=10_000.0, help="Startkapital fuer Backtest")
+    parser.add_argument("--balance",  type=float, default=10_000.0, help="Startkapital")
+    parser.add_argument("--strategy", default="trend",
+                        choices=["trend", "mean_reversion"],
+                        help="Strategie fuer Backtest: trend (default) | mean_reversion")
     args = parser.parse_args()
 
     print("""
@@ -905,7 +1182,25 @@ if __name__ == "__main__":
     if args.backtest:
         print(f"Starte Backtest: {args.symbol} | {args.days} Tage | {args.balance:.0f} USDT\n")
         ex = ccxt.binance({"enableRateLimit": True})
-        Backtester(ex).run(args.symbol, CONFIG["TIMEFRAME"], args.days, args.balance)
+
+        strategy_obj = None
+        if args.strategy == "mean_reversion":
+            try:
+                import sys as _sys
+                _sys.path.insert(0, ".")
+                from strategies.mean_reversion import MeanReversionStrategy
+                strategy_obj = MeanReversionStrategy()
+            except ImportError as e:
+                print(f"Fehler beim Laden der Strategie: {e}")
+                sys.exit(1)
+
+        Backtester(ex, strategy=strategy_obj).run(
+            args.symbol, CONFIG["TIMEFRAME"], args.days, args.balance
+        )
+    elif args.paper:
+        print("PAPER TRADING MODUS — Echte Live-Preise, simulierte Orders\n")
+        print("SICHERHEIT: Kein API-Key verwendet. Kein echter Order möglich.\n")
+        run_paper_trading(args.symbol, args.balance)
     else:
         if CONFIG["DRY_RUN"]:
             print("SIMULATIONSMODUS AKTIV — Kein echtes Geld wird verwendet.\n")

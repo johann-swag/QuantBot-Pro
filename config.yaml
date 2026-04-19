@@ -32,11 +32,11 @@ exchange:
 # ----------------------------------------------------------
 indicators:
   ema:
-    fast_period: 12            # Fast EMA period
-    slow_period: 26            # Slow EMA period
+    fast_period: 10            # Fast EMA period
+    slow_period: 21            # Slow EMA period
 
   rsi:
-    period: 14
+    period: 10
     overbought: 70             # No long entries above this
     oversold: 30               # No short entries below this
 
