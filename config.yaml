@@ -1,0 +1,103 @@
+# ============================================================
+# QuantBot Pro — Central Configuration
+# ============================================================
+# All strategy, risk, and system parameters are defined here.
+# Credentials (API keys) go ONLY in .env — never in this file.
+# ============================================================
+
+# ----------------------------------------------------------
+# SYSTEM
+# ----------------------------------------------------------
+system:
+  mode: paper                  # "paper" | "live" — ALWAYS start with paper
+  log_level: INFO              # DEBUG | INFO | WARNING | ERROR
+  session_file: session.json
+  trade_log: logs/trades.jsonl
+  timezone: UTC
+
+# ----------------------------------------------------------
+# EXCHANGE
+# ----------------------------------------------------------
+exchange:
+  name: binance                # ccxt exchange id
+  symbols:
+    - BTC/USDT
+    - ETH/USDT
+    - SOL/USDT
+  timeframe: 1h                # Candlestick interval for signal generation
+  data_lookback_bars: 200      # Bars loaded on startup for indicator warmup
+
+# ----------------------------------------------------------
+# INDICATORS
+# ----------------------------------------------------------
+indicators:
+  ema:
+    fast_period: 12            # Fast EMA period
+    slow_period: 26            # Slow EMA period
+
+  rsi:
+    period: 14
+    overbought: 70             # No long entries above this
+    oversold: 30               # No short entries below this
+
+  adx:
+    period: 14
+    min_threshold: 25          # Trades BLOCKED if ADX < this (choppy market filter)
+    strong_trend: 40           # Optional: scale position if ADX > this
+
+# ----------------------------------------------------------
+# ENGINE (Signal & Execution Logic)
+# ----------------------------------------------------------
+engine:
+  cooldown_minutes: 30         # Minimum minutes between trades on the same symbol
+  max_open_positions: 3        # Hard cap on simultaneous open positions
+  entry_order_type: market     # "market" | "limit"
+  slippage_buffer_pct: 0.05    # Added to limit price for faster fills (limit orders)
+
+# ----------------------------------------------------------
+# RISK MANAGEMENT
+# ----------------------------------------------------------
+risk:
+  per_trade_pct: 1.0           # % of current equity risked per trade (Kelly input)
+  max_position_pct: 10.0       # Single position never exceeds X% of portfolio
+
+  trailing_stop:
+    enabled: true
+    initial_stop_pct: 2.0      # Initial stop distance from entry (%)
+    trail_pct: 2.0             # Stop trails this far below the highest price seen
+
+  daily_drawdown:
+    limit_pct: 3.0             # Circuit breaker: halt all trading if daily loss >= X%
+    reset_time: "00:00"        # UTC time when the daily drawdown counter resets
+
+  correlation:
+    enabled: true
+    threshold: 0.90            # Block new trade if existing position corr > this
+    lookback_days: 30          # Historical window for correlation calculation
+
+# ----------------------------------------------------------
+# WALK-FORWARD VALIDATION
+# ----------------------------------------------------------
+validator:
+  mode: sliding                # "sliding" | "anchored"
+  in_sample_days: 180          # Training window length
+  out_of_sample_days: 60       # Test window length (forward-stepped after each run)
+  step_days: 30                # How far the window slides each iteration
+  min_trades_per_window: 20    # Discard windows with too few trades (statistically weak)
+  target_metric: sharpe        # Optimization metric: "sharpe" | "profit_factor" | "cagr"
+
+# ----------------------------------------------------------
+# HEALTH CHECKER
+# ----------------------------------------------------------
+health:
+  poll_interval_seconds: 60    # How often health checks run
+  max_data_staleness_seconds: 300   # Alert if last candle older than X seconds
+  api_timeout_seconds: 10      # Exchange API call timeout
+  alert_on_failure: true       # Send Telegram alert on health check failure
+
+# ----------------------------------------------------------
+# DASHBOARD
+# ----------------------------------------------------------
+dashboard:
+  refresh_seconds: 5           # How often dashboard re-reads session.json
+  show_closed_trades: 20       # Number of historical trades shown in the table
