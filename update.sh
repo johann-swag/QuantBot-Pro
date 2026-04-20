@@ -3,8 +3,8 @@ echo "=== QuantBot Pro Update ==="
 
 cd /opt/quantbot
 
-# Bot stoppen
-systemctl stop quantbot
+# Services stoppen
+systemctl stop quantbot quantbot-dashboard
 
 # Neuesten Code holen
 git pull origin main
@@ -13,8 +13,8 @@ git pull origin main
 source .venv/bin/activate
 pip install -r requirements.txt --quiet
 
-# Bot neu starten
-systemctl start quantbot
+# Services neu starten
+systemctl start quantbot quantbot-dashboard
 
 echo "Update abgeschlossen"
-systemctl status quantbot --no-pager
+systemctl status quantbot quantbot-dashboard --no-pager
