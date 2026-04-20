@@ -20,10 +20,10 @@ echo "║   Container: $CTID | $HOSTNAME           ║"
 echo "╚══════════════════════════════════════════╝"
 
 # Eingaben
-read -s -p "Telegram Token: " TELEGRAM_TOKEN
+read -s -p "Telegram Token (nur den Token-Wert): " TELEGRAM_TOKEN
 echo
 TELEGRAM_TOKEN="${TELEGRAM_TOKEN#*=}"
-read -p "Telegram Chat ID: " TELEGRAM_CHAT_ID
+read -p "Telegram Chat ID (nur die Zahl, z.B. 1295319293): " TELEGRAM_CHAT_ID
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID#*=}"
 
 echo ""
