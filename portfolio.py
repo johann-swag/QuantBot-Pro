@@ -521,7 +521,10 @@ Beispiel:
         "--paper", action="store_true", required=True,
         help="Paper-Trading-Modus (PFLICHT — schützt vor versehentlichem Live-Handel)",
     )
-    parser.add_argument("--symbol", default="BTC/USDT", help="Handelspaar (default: BTC/USDT)")
+    parser.add_argument("--symbol",   default="BTC/USDT", help="Handelspaar (default: BTC/USDT)")
+    parser.add_argument("--strategy", default="portfolio",
+                        choices=["portfolio", "trend", "mean_reversion"],
+                        help="Strategie-Modus: portfolio (beide) | trend | mean_reversion")
     args = parser.parse_args()
 
     print("""
