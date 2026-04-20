@@ -22,7 +22,9 @@ echo "╚═══════════════════════�
 # Eingaben
 read -s -p "Telegram Token: " TELEGRAM_TOKEN
 echo
+TELEGRAM_TOKEN="${TELEGRAM_TOKEN#*=}"
 read -p "Telegram Chat ID: " TELEGRAM_CHAT_ID
+TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID#*=}"
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
