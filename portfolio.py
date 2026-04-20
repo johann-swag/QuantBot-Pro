@@ -29,6 +29,7 @@ sys.path.insert(0, ".")
 from strategies.trend_following import TrendFollowingStrategy
 from strategies.mean_reversion  import MeanReversionStrategy
 from telegram_bot import TelegramAlert
+from logger       import QuantBotLogger
 
 # KRITISCH: Immer True — niemals auf False setzen
 DRY_RUN = True
@@ -117,6 +118,7 @@ class PortfolioEngine:
         self._last_candle_ts = None
         self._display_lines  = 0
         self._lock           = threading.Lock()
+        self.logger: QuantBotLogger | None = None
 
     # ── Daten ────────────────────────────────────────────────
 
@@ -138,18 +140,59 @@ class PortfolioEngine:
 
     # ── Trade-Logik ──────────────────────────────────────────
 
+    def _get_portfolio_state(self) -> dict:
+        return {
+            "symbol":        self.symbol,
+            "capital_total": sum(s.start_balance for s in self.slots),
+            "combined_losses": self.combined_losses,
+            "tf": {
+                "balance":      self.slots[0].balance,
+                "pnl":          self.slots[0].pnl,
+                "trades":       len(self.slots[0].trades),
+                "wins":         self.slots[0].wins,
+                "has_position": self.slots[0].position is not None,
+            },
+            "mr": {
+                "balance":      self.slots[1].balance,
+                "pnl":          self.slots[1].pnl,
+                "trades":       len(self.slots[1].trades),
+                "wins":         self.slots[1].wins,
+                "has_position": self.slots[1].position is not None,
+            },
+        }
+
     def _process_candle(self, df: pd.DataFrame):
         """Wird einmal pro neuer geschlossener Kerze aufgerufen."""
+        # Indikatoren für beide Strategien einmalig berechnen
+        df_by = {slot.label: slot.strategy.compute(df) for slot in self.slots}
+
         for slot in self.slots:
-            df_c = slot.strategy.compute(df)
+            df_c = df_by[slot.label]
             sig  = slot.strategy.signal(df_c)
 
-            # Erst Exit-Check, dann Entry (Position könnte sich in selber Kerze schließen)
+            # MAE/MFE-Tracking für offene Position
+            if slot.position and self.logger:
+                row = df_c.iloc[-2]
+                tid = f"{slot.label}_{slot.position['entry_time']}"
+                self.logger.update_trade_tracking(tid, float(row["high"]), float(row["low"]))
+
+            # blocked_by VOR Exit-Check bestimmen
+            blocked = ("CIRCUIT_BREAKER" if self.circuit_active
+                       else "POSITION_OPEN" if slot.position else "NONE")
+
+            # Erst Exit-Check, dann Entry
             if slot.position:
                 self._check_exit(slot, df_c, sig)
 
             if not slot.position and not self.circuit_active and sig["direction"] != "NONE":
                 self._enter(slot, sig)
+
+            if self.logger:
+                self.logger.log_signal(slot.label, sig, df_c, blocked)
+
+        # Markt-Snapshot einmal pro Kerze
+        if self.logger and len(self.slots) >= 2:
+            self.logger.log_market_snapshot(df_by[self.slots[0].label], df_by[self.slots[1].label])
 
     def _enter(self, slot: PortfolioSlot, sig: dict):
         direction = sig["direction"]
@@ -170,6 +213,18 @@ class PortfolioEngine:
             "risk_amount": pos["risk_amount"],
         }
         slot._status = f"{direction} @ {entry:,.2f}"
+
+        if self.logger:
+            tid = f"{slot.label}_{sig['timestamp']}"
+            self.logger.start_trade_tracking(tid, {
+                "label":       slot.label,
+                "entry":       entry,
+                "direction":   direction,
+                "stop_loss":   pos["stop_loss"],
+                "take_profit": pos["take_profit"],
+                "qty":         pos["quantity"],
+                "entry_time":  sig["timestamp"],
+            })
 
         icon = "🟢" if direction == "LONG" else "🔴"
         self.alert.send(
@@ -242,6 +297,16 @@ class PortfolioEngine:
             "balance":    round(slot.balance,       4),
         }
         slot.trades.append(trade)
+
+        if self.logger:
+            tid = f"{slot.label}_{pos['entry_time']}"
+            self.logger.log_trade_quality(tid, {
+                "pnl":        pnl,
+                "exit_price": exit_price,
+                "exit_time":  str(row.name),
+                "reason":     reason,
+            })
+
         slot.position = None
 
         icon = "✅" if pnl > 0 else "❌"
@@ -382,6 +447,11 @@ class PortfolioEngine:
     def run(self):
         print("  Lade initiale Daten...", flush=True)
         self._save_trades()
+
+        # Logging-System starten
+        self.logger = QuantBotLogger(exchange=self.exchange)
+        self.logger.start_background_threads(self._get_portfolio_state)
+
         self._start_hourly_telegram()
 
         self.alert.send(

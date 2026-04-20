@@ -5,3 +5,6 @@ ccxt==4.3.89           # Exchange-Anbindung (100+ Exchanges unified API)
 pandas==2.2.2           # Datenverarbeitung & OHLCV-Handling
 numpy==1.26.4           # Numerische Berechnungen fuer Indikatoren
 python-dotenv==1.0.1    # .env Datei laden (API-Key Isolation)
+flask>=3.0              # Web Dashboard (dashboard.py)
+requests>=2.31          # Fear & Greed API (logger.py)
+psutil>=5.9             # System Health Monitoring (logger.py)

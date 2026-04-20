@@ -1,0 +1,23 @@
+[Unit]
+Description=QuantBot Pro Paper Trading
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/quantbot
+Environment=PATH=/opt/quantbot/.venv/bin:/usr/bin:/bin
+EnvironmentFile=/opt/quantbot/.env
+ExecStart=/opt/quantbot/.venv/bin/python3 portfolio.py --paper --symbol BTC/USDT
+Restart=always
+RestartSec=30
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Logging
+StandardOutput=append:/opt/quantbot/logs/service.log
+StandardError=append:/opt/quantbot/logs/service_error.log
+
+[Install]
+WantedBy=multi-user.target
