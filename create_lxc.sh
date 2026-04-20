@@ -20,7 +20,6 @@ echo "║   Container: $CTID | $HOSTNAME           ║"
 echo "╚══════════════════════════════════════════╝"
 
 # Eingaben
-read -p "GitHub Token (ghp_...): " GITHUB_TOKEN
 read -s -p "Telegram Token: " TELEGRAM_TOKEN
 echo
 read -p "Telegram Chat ID: " TELEGRAM_CHAT_ID
@@ -56,7 +55,7 @@ pct exec $CTID -- bash -c "
     apt update -qq
     apt install -y git python3 python3-venv curl htop -qq
 
-    git clone https://$GITHUB_TOKEN@github.com/johann-swag/quantbot-pro.git /opt/quantbot
+    git clone https://github.com/johann-swag/QuantBot-Pro.git /opt/quantbot
 
     cd /opt/quantbot
     python3 -m venv .venv

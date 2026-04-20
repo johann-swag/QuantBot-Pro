@@ -11,7 +11,7 @@ apt install -y python3 python3-venv git curl htop
 
 # 3. Repo klonen (falls nicht vorhanden)
 if [ ! -d "/opt/quantbot" ]; then
-    git clone https://github.com/johann-swag/quantbot-pro.git /opt/quantbot
+    git clone https://github.com/johann-swag/QuantBot-Pro.git /opt/quantbot
 fi
 
 # 4. Venv + Python Dependencies
