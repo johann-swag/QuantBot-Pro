@@ -16,7 +16,9 @@ import socket
 from pathlib import Path
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify
+import csv as _csv
+from datetime import timedelta
+from flask import Flask, jsonify, request
 
 app = Flask(__name__, static_folder=None)
 LOG_DIR = Path("logs")
@@ -24,6 +26,66 @@ LOG_DIR = Path("logs")
 # ============================================================
 # DATEN LADEN
 # ============================================================
+
+def load_chart_data(range_str: str = "24h") -> dict | None:
+    cutoff_map = {"24h": timedelta(hours=24), "3d": timedelta(days=3), "7d": timedelta(days=7)}
+    cutoff = (datetime.now(timezone.utc) - cutoff_map[range_str]).isoformat() \
+             if range_str in cutoff_map else None
+
+    rows, sig_rows = [], []
+    for date_dir in sorted(LOG_DIR.glob("????-??-??")):
+        for fname, target in [("market_snapshot.csv", rows), ("signals.csv", sig_rows)]:
+            p = date_dir / fname
+            if p.exists():
+                with open(p, newline="") as f:
+                    for row in _csv.DictReader(f):
+                        target.append(row)
+
+    if cutoff:
+        rows     = [r for r in rows     if r.get("timestamp", "") >= cutoff]
+        sig_rows = [r for r in sig_rows if r.get("timestamp", "") >= cutoff]
+
+    if not rows:
+        return None
+
+    def f(v):
+        try:    return round(float(v), 6) if v not in ("", None, "None") else None
+        except: return None
+
+    labels = [r["timestamp"][:16] for r in rows]
+    ts_idx = {t: i for i, t in enumerate(labels)}
+
+    long_data = [None] * len(rows)
+    exit_data = [None] * len(rows)
+    for r in sig_rows:
+        stype   = r.get("signal_type", "")
+        blocked = r.get("blocked_by", "NONE")
+        if stype not in ("LONG", "SHORT") or blocked != "NONE":
+            continue
+        idx = ts_idx.get(r["timestamp"][:16])
+        if idx is None:
+            continue
+        price = f(rows[idx].get("close"))
+        if price is None:
+            continue
+        if stype == "LONG":
+            long_data[idx] = price * 0.9975
+        else:
+            exit_data[idx] = price * 1.0025
+
+    return {
+        "timestamps": labels,
+        "close":      [f(r.get("close"))     for r in rows],
+        "ema_10":     [f(r.get("ema_10"))    for r in rows],
+        "ema_21":     [f(r.get("ema_21"))    for r in rows],
+        "bb_upper":   [f(r.get("bb_upper"))  for r in rows],
+        "bb_middle":  [f(r.get("bb_middle")) for r in rows],
+        "bb_lower":   [f(r.get("bb_lower"))  for r in rows],
+        "rsi":        [f(r.get("rsi_tf"))    for r in rows],
+        "adx":        [f(r.get("adx"))       for r in rows],
+        "long_signals": long_data,
+        "exit_signals": exit_data,
+    }
 
 def load_env_config() -> dict:
     for candidate in [Path("/opt/quantbot/.env"), Path(".env")]:
@@ -182,6 +244,14 @@ def api_walkforward():
         return jsonify({"error": "Keine Walk-Forward-Daten gefunden"}), 404
     return jsonify(build_wf_stats(raw))
 
+@app.route("/api/chart-data")
+def api_chart_data():
+    range_str = request.args.get("range", "24h")
+    data = load_chart_data(range_str)
+    if data is None:
+        return jsonify({"error": "Keine Chart-Daten verfügbar — Erster Datenpunkt nach der nächsten 4h-Kerze"}), 404
+    return jsonify(data)
+
 @app.route("/api/config")
 def api_config():
     env  = load_env_config()
@@ -301,6 +371,29 @@ HTML = r"""<!DOCTYPE html>
   .stat-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #1f2230; font-size: 13px; }
   .stat-row:last-child { border-bottom: none; }
   .cb-banner { background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.3); border-radius: 8px; padding: 10px 14px; color: var(--red); font-weight: 600; font-size: 13px; margin-bottom: 12px; }
+
+  /* Tabs */
+  .tab-bar { display: flex; gap: 2px; padding: 0 24px; background: var(--card); border-bottom: 1px solid var(--border); }
+  .tab-btn { background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted); padding: 12px 18px; cursor: pointer; font-size: 14px; transition: all .15s; white-space: nowrap; }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+  /* Chart Tab */
+  .chart-controls { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+  .chart-info { font-size: 12px; color: var(--muted); }
+  .range-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 5px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; transition: all .15s; }
+  .range-btn:hover { border-color: var(--accent); color: var(--text); }
+  .range-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .chart-placeholder { text-align: center; padding: 60px 20px; color: var(--muted); font-size: 15px; line-height: 2.2; background: var(--card); border: 1px solid var(--border); border-radius: 10px; }
+  .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; margin-bottom: 12px; }
+  .chart-card-title { font-size: 11px; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 8px; }
+  .chart-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .legend-dot { display: inline-block; width: 10px; height: 3px; border-radius: 2px; }
+  .chart-price-wrap { position: relative; height: 340px; }
+  .chart-rsi-wrap, .chart-adx-wrap { position: relative; height: 150px; }
+  #tab-chart canvas { max-height: none !important; }
+  @media (max-width: 600px) { .chart-price-wrap { height: 240px; } .tab-btn { padding: 10px 12px; font-size: 13px; } }
 </style>
 </head>
 <body>
@@ -318,7 +411,13 @@ HTML = r"""<!DOCTYPE html>
   </div>
 </header>
 
+<nav class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('tab-main',this)">📊 Backtest &amp; Portfolio</button>
+  <button class="tab-btn"        onclick="switchTab('tab-chart',this)">📈 Live Chart</button>
+</nav>
+
 <main>
+<div id="tab-main">
   <!-- KPI Row -->
   <div class="grid-4" id="kpi-row">
     <div class="card kpi"><div class="value neu" id="kpi-start">—</div><div class="label">Startkapital</div></div>
@@ -392,6 +491,54 @@ HTML = r"""<!DOCTYPE html>
       <div id="port-trades"></div>
     </div>
   </div>
+</div><!-- #tab-main -->
+
+<!-- ═══════════════ LIVE CHART TAB ═══════════════ -->
+<div id="tab-chart" style="display:none">
+
+  <div class="chart-controls">
+    <div class="chart-info">📡 Live-Daten aus market_snapshot.csv &nbsp;|&nbsp; <span id="chart-last-update">—</span></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <button class="range-btn active" onclick="setRange('24h',this)">Letzte 24h</button>
+      <button class="range-btn"        onclick="setRange('3d',this)">3 Tage</button>
+      <button class="range-btn"        onclick="setRange('7d',this)">7 Tage</button>
+      <button class="range-btn"        onclick="setRange('all',this)">Alles</button>
+    </div>
+  </div>
+
+  <div id="chart-placeholder" class="chart-placeholder" style="display:none">
+    📡 Sammle Live-Daten...<br>
+    Erster Datenpunkt in ~4 Stunden (nächste 4h-Kerze)
+  </div>
+
+  <div id="chart-content">
+    <!-- Preis-Chart -->
+    <div class="chart-card">
+      <div class="chart-legend">
+        <span class="legend-item"><span class="legend-dot" style="background:#e2e8f0"></span>Close</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>EMA 10</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#f97316"></span>EMA 21</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#64748b"></span>BB Bands</span>
+        <span class="legend-item" style="color:#22c55e">▲ Long</span>
+        <span class="legend-item" style="color:#ef4444">▼ Short/Exit</span>
+      </div>
+      <div class="chart-price-wrap"><canvas id="priceChart"></canvas></div>
+    </div>
+
+    <!-- RSI -->
+    <div class="chart-card">
+      <div class="chart-card-title">RSI — Oversold &lt;25 (grün) · Overbought &gt;65 (rot)</div>
+      <div class="chart-rsi-wrap"><canvas id="rsiChart"></canvas></div>
+    </div>
+
+    <!-- ADX -->
+    <div class="chart-card">
+      <div class="chart-card-title">ADX — Trendstärke (Threshold 25)</div>
+      <div class="chart-adx-wrap"><canvas id="adxChart"></canvas></div>
+    </div>
+  </div>
+
+</div><!-- #tab-chart -->
 </main>
 
 <script>
@@ -724,6 +871,138 @@ async function loadConfig() {
       ? d.backtest_days + ' Tage' : 'Kein Backtest'
     document.getElementById('cfg-uptime').textContent    = d.uptime || '—'
   } catch(e) { /* ignore */ }
+}
+
+// ── Tab Switching ─────────────────────────────────────────────
+let chartTimer = null
+
+function switchTab(id, btn) {
+  document.getElementById('tab-main').style.display  = id === 'tab-main'  ? '' : 'none'
+  document.getElementById('tab-chart').style.display = id === 'tab-chart' ? '' : 'none'
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'))
+  btn.classList.add('active')
+  if (id === 'tab-chart') {
+    loadChart()
+    if (!chartTimer) chartTimer = setInterval(loadChart, 30000)
+  } else {
+    clearInterval(chartTimer); chartTimer = null
+  }
+}
+
+// ── Range Selector ────────────────────────────────────────────
+let chartRange = '24h'
+
+function setRange(r, btn) {
+  chartRange = r
+  document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'))
+  btn.classList.add('active')
+  loadChart()
+}
+
+// ── Chart Base Options ────────────────────────────────────────
+function baseOpts(yExtra = {}) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: '#64748b', maxTicksLimit: 8, maxRotation: 0, font: { size: 10 } }, grid: { color: '#1f2230' } },
+      y: Object.assign({ ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#2a2d3a' } }, yExtra)
+    }
+  }
+}
+
+// ── Load + Draw ───────────────────────────────────────────────
+let priceInst = null, rsiInst = null, adxInst = null
+
+async function loadChart() {
+  try {
+    const r = await fetch('/api/chart-data?range=' + chartRange)
+    if (!r.ok) { showChartEmpty(); return }
+    const d = await r.json()
+    if (d.error) { showChartEmpty(); return }
+    document.getElementById('chart-placeholder').style.display = 'none'
+    document.getElementById('chart-content').style.display     = ''
+    document.getElementById('chart-last-update').textContent   =
+      'Aktualisiert: ' + new Date().toLocaleTimeString('de-DE')
+    drawPrice(d)
+    drawRsi(d)
+    drawAdx(d)
+  } catch(e) { showChartEmpty() }
+}
+
+function showChartEmpty() {
+  document.getElementById('chart-placeholder').style.display = ''
+  document.getElementById('chart-content').style.display     = 'none'
+}
+
+function drawPrice(d) {
+  const ctx = document.getElementById('priceChart').getContext('2d')
+  if (priceInst) priceInst.destroy()
+  const len = d.timestamps.length
+  priceInst = new Chart(ctx, {
+    type: 'line',
+    data: { labels: d.timestamps, datasets: [
+      // BB band fill area (upper→lower)
+      { label:'BB Upper', data: d.bb_upper,  borderColor:'rgba(100,116,139,.4)', borderWidth:1, backgroundColor:'rgba(100,116,139,.07)', fill:'+1', pointRadius:0, tension:.2 },
+      { label:'BB Lower', data: d.bb_lower,  borderColor:'rgba(100,116,139,.4)', borderWidth:1, fill:false, pointRadius:0, tension:.2 },
+      // BB middle dashed
+      { label:'BB Mid',   data: d.bb_middle, borderColor:'rgba(100,116,139,.35)', borderWidth:1, borderDash:[4,4], fill:false, pointRadius:0, tension:.2 },
+      // EMAs
+      { label:'EMA 10',  data: d.ema_10,  borderColor:'#3b82f6', borderWidth:1.5, fill:false, pointRadius:0, tension:.2 },
+      { label:'EMA 21',  data: d.ema_21,  borderColor:'#f97316', borderWidth:1.5, fill:false, pointRadius:0, tension:.2 },
+      // Close price
+      { label:'Close',   data: d.close,   borderColor:'#e2e8f0', borderWidth:2,   fill:false, pointRadius:0, tension:.1 },
+      // Signal markers — showLine:false = only points shown at non-null positions
+      { label:'Long',  data: d.long_signals, borderColor:'transparent', backgroundColor:'#22c55e', showLine:false, pointStyle:'triangle', pointRadius:9, rotation:0   },
+      { label:'Short', data: d.exit_signals, borderColor:'transparent', backgroundColor:'#ef4444', showLine:false, pointStyle:'triangle', pointRadius:9, rotation:180 },
+    ]},
+    options: baseOpts({ ticks: { color:'#64748b', font:{size:10}, callback: v => v.toFixed(0) } })
+  })
+}
+
+function drawRsi(d) {
+  const ctx = document.getElementById('rsiChart').getContext('2d')
+  if (rsiInst) rsiInst.destroy()
+  const len = d.timestamps.length
+  const fill25 = new Array(len).fill(25)
+  const fill65 = new Array(len).fill(65)
+  rsiInst = new Chart(ctx, {
+    type: 'line',
+    data: { labels: d.timestamps, datasets: [
+      // Oversold zone fill (bottom → 25)
+      { data: fill25, borderColor:'transparent', borderWidth:0, backgroundColor:'rgba(34,197,94,.08)', fill:'start', pointRadius:0 },
+      // Overbought zone fill (65 → top)
+      { data: fill65, borderColor:'transparent', borderWidth:0, backgroundColor:'rgba(239,68,68,.08)', fill:'end',   pointRadius:0 },
+      // RSI line
+      { label:'RSI', data: d.rsi, borderColor:'#a78bfa', borderWidth:1.5, fill:false, pointRadius:0, tension:.2 },
+      // Reference lines
+      { data: fill25, borderColor:'rgba(34,197,94,.6)',  borderWidth:1, borderDash:[4,4], fill:false, pointRadius:0 },
+      { data: fill65, borderColor:'rgba(239,68,68,.6)',  borderWidth:1, borderDash:[4,4], fill:false, pointRadius:0 },
+    ]},
+    options: baseOpts({ min:0, max:100, ticks:{ color:'#64748b', font:{size:10}, stepSize:25 } })
+  })
+}
+
+function drawAdx(d) {
+  const ctx = document.getElementById('adxChart').getContext('2d')
+  if (adxInst) adxInst.destroy()
+  const len = d.timestamps.length
+  const fill25 = new Array(len).fill(25)
+  adxInst = new Chart(ctx, {
+    type: 'line',
+    data: { labels: d.timestamps, datasets: [
+      // Trend zone (above 25)
+      { data: fill25, borderColor:'transparent', borderWidth:0, backgroundColor:'rgba(34,197,94,.06)', fill:'end', pointRadius:0 },
+      // ADX line
+      { label:'ADX', data: d.adx, borderColor:'#fbbf24', borderWidth:1.5, fill:false, pointRadius:0, tension:.2 },
+      // Threshold
+      { data: fill25, borderColor:'rgba(34,197,94,.6)', borderWidth:1, borderDash:[4,4], fill:false, pointRadius:0 },
+    ]},
+    options: baseOpts({ min:0, ticks:{ color:'#64748b', font:{size:10} } })
+  })
 }
 
 // ── Init ─────────────────────────────────────────────────────
