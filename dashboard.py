@@ -754,4 +754,4 @@ if __name__ == "__main__":
     print("  Liest:  logs/backtest_BTC_USDT.json")
     print("          logs/walkforward_BTC_USDT_*.json (neueste)")
     print("  Stop:   CTRL+C\n")
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=False)
