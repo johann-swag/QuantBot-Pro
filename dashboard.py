@@ -28,61 +28,60 @@ LOG_DIR = Path("logs")
 # ============================================================
 
 def load_chart_data(range_str: str = "24h") -> dict | None:
-    cutoff_map = {"24h": timedelta(hours=24), "3d": timedelta(days=3), "7d": timedelta(days=7)}
-    cutoff = (datetime.now(timezone.utc) - cutoff_map[range_str]).isoformat() \
-             if range_str in cutoff_map else None
-
-    rows, sig_rows = [], []
-    for date_dir in sorted(LOG_DIR.glob("????-??-??")):
-        for fname, target in [("market_snapshot.csv", rows), ("signals.csv", sig_rows)]:
-            p = date_dir / fname
-            if p.exists():
-                with open(p, newline="") as f:
-                    for row in _csv.DictReader(f):
-                        target.append(row)
-
-    if cutoff:
-        rows     = [r for r in rows     if r.get("timestamp", "") >= cutoff]
-        sig_rows = [r for r in sig_rows if r.get("timestamp", "") >= cutoff]
-
-    if not rows:
+    cache_path = LOG_DIR / "ohlcv_cache.json"
+    if not cache_path.exists():
+        return None
+    try:
+        with open(cache_path) as f:
+            data = json.load(f)
+    except Exception:
         return None
 
-    def f(v):
-        try:    return round(float(v), 6) if v not in ("", None, "None") else None
-        except: return None
+    candles = data.get("candles", [])
+    if not candles:
+        return None
 
-    labels = [r["timestamp"][:16] for r in rows]
-    ts_idx = {t: i for i, t in enumerate(labels)}
+    # Range filter (4h candles)
+    limit = {"24h": 6, "3d": 18, "7d": 42}.get(range_str)
+    if limit:
+        candles = candles[-limit:]
 
-    long_data = [None] * len(rows)
-    exit_data = [None] * len(rows)
-    for r in sig_rows:
-        stype   = r.get("signal_type", "")
-        blocked = r.get("blocked_by", "NONE")
-        if stype not in ("LONG", "SHORT") or blocked != "NONE":
+    timestamps = [c["t"] for c in candles]
+    ts_idx     = {t: i for i, t in enumerate(timestamps)}
+
+    long_data = [None] * len(candles)
+    exit_data = [None] * len(candles)
+    for date_dir in sorted(LOG_DIR.glob("????-??-??")):
+        sig_path = date_dir / "signals.csv"
+        if not sig_path.exists():
             continue
-        idx = ts_idx.get(r["timestamp"][:16])
-        if idx is None:
-            continue
-        price = f(rows[idx].get("close"))
-        if price is None:
-            continue
-        if stype == "LONG":
-            long_data[idx] = price * 0.9975
-        else:
-            exit_data[idx] = price * 1.0025
+        with open(sig_path, newline="") as f:
+            for row in _csv.DictReader(f):
+                if row.get("signal_type") not in ("LONG", "SHORT"):
+                    continue
+                if row.get("blocked_by", "NONE") != "NONE":
+                    continue
+                idx = ts_idx.get(row["timestamp"][:16])
+                if idx is None:
+                    continue
+                price = candles[idx].get("c")
+                if price is None:
+                    continue
+                if row["signal_type"] == "LONG":
+                    long_data[idx] = price * 0.9975
+                else:
+                    exit_data[idx] = price * 1.0025
 
     return {
-        "timestamps": labels,
-        "close":      [f(r.get("close"))     for r in rows],
-        "ema_10":     [f(r.get("ema_10"))    for r in rows],
-        "ema_21":     [f(r.get("ema_21"))    for r in rows],
-        "bb_upper":   [f(r.get("bb_upper"))  for r in rows],
-        "bb_middle":  [f(r.get("bb_middle")) for r in rows],
-        "bb_lower":   [f(r.get("bb_lower"))  for r in rows],
-        "rsi":        [f(r.get("rsi_tf"))    for r in rows],
-        "adx":        [f(r.get("adx"))       for r in rows],
+        "timestamps":   timestamps,
+        "close":        [c.get("c")   for c in candles],
+        "ema_10":       [c.get("e10") for c in candles],
+        "ema_21":       [c.get("e21") for c in candles],
+        "bb_upper":     [c.get("bbu") for c in candles],
+        "bb_middle":    [c.get("bbm") for c in candles],
+        "bb_lower":     [c.get("bbl") for c in candles],
+        "rsi":          [c.get("rsi") for c in candles],
+        "adx":          [c.get("adx") for c in candles],
         "long_signals": long_data,
         "exit_signals": exit_data,
     }

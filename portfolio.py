@@ -122,6 +122,7 @@ class PortfolioEngine:
         self._display_lines  = 0
         self._lock           = threading.Lock()
         self.logger: QuantBotLogger | None = None
+        self._ohlcv_init     = True
 
     # ── Daten ────────────────────────────────────────────────
 
@@ -379,6 +380,45 @@ class PortfolioEngine:
             print(line)
         self._display_lines = len(box)
 
+    # ── OHLCV-Cache für Dashboard-Chart ─────────────────────
+
+    def _save_ohlcv_cache(self, df_tf: pd.DataFrame, df_mr: pd.DataFrame):
+        import math
+
+        def safe(v):
+            try:
+                x = float(v)
+                return None if math.isnan(x) or math.isinf(x) else round(x, 2)
+            except Exception:
+                return None
+
+        def col(row, c):
+            try:    return safe(row[c])
+            except: return None
+
+        out = []
+        for ts in df_tf.index[-200:]:
+            rtf = df_tf.loc[ts]
+            rmr = df_mr.loc[ts] if ts in df_mr.index else pd.Series(dtype=float)
+            out.append({
+                "t":   str(ts)[:16],
+                "c":   col(rtf, "close"),
+                "e10": col(rtf, "ema_fast"),
+                "e21": col(rtf, "ema_slow"),
+                "rsi": col(rtf, "rsi"),
+                "adx": col(rtf, "adx"),
+                "bbu": col(rmr, "bb_upper"),
+                "bbm": col(rmr, "bb_middle"),
+                "bbl": col(rmr, "bb_lower"),
+            })
+        Path("logs").mkdir(exist_ok=True)
+        with open("logs/ohlcv_cache.json", "w") as f:
+            json.dump({
+                "updated": datetime.now(timezone.utc).isoformat(),
+                "symbol":  self.symbol,
+                "candles": out,
+            }, f)
+
     # ── Persistenz ───────────────────────────────────────────
 
     def _save_trades(self):
@@ -473,8 +513,17 @@ class PortfolioEngine:
                     df    = self._fetch_df()
                     price = self._current_price()
 
-                    # Neue Kerze? (iloc[-2] = letzte abgeschlossene Kerze)
+                    # OHLCV-Cache: einmalig beim Start + bei jeder neuen Kerze
                     candle_ts = str(df.index[-2])
+                    if self._ohlcv_init or candle_ts != self._last_candle_ts:
+                        try:
+                            df_tf = self.slots[0].strategy.compute(df.copy())
+                            df_mr = self.slots[1].strategy.compute(df.copy())
+                            self._save_ohlcv_cache(df_tf, df_mr)
+                        except Exception:
+                            pass
+                        self._ohlcv_init = False
+
                     if candle_ts != self._last_candle_ts:
                         self._last_candle_ts = candle_ts
                         if not self.circuit_active:
