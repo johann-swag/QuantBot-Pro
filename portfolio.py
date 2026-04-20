@@ -13,6 +13,7 @@
 ================================================================================
 """
 
+import os
 import sys
 import json
 import time
@@ -36,9 +37,11 @@ DRY_RUN = True
 
 # ── Portfolio-Konfiguration ───────────────────────────────────
 
+_START_CAPITAL = float(os.getenv("START_CAPITAL", 10_000))
+
 CFG = {
-    "CAPITAL_TF":              5_000.0,
-    "CAPITAL_MR":              5_000.0,
+    "CAPITAL_TF":              _START_CAPITAL / 2,
+    "CAPITAL_MR":              _START_CAPITAL / 2,
     "CIRCUIT_BREAKER_LOSSES":  3,
     "DISPLAY_INTERVAL":        30,    # Sekunden zwischen Display-Updates
     "TELEGRAM_INTERVAL":       3600,  # 60 Minuten zwischen Portfolio-Updates
@@ -454,10 +457,12 @@ class PortfolioEngine:
 
         self._start_hourly_telegram()
 
+        capital_tf = self.slots[0].start_balance
+        capital_mr = self.slots[1].start_balance
         self.alert.send(
             f"🚀 <b>Portfolio gestartet — {self.symbol}</b>\n"
-            f"[TF] EMA(10/21) ADX>25  — 5.000 USDT\n"
-            f"[MR] BB(25/3.0) RSI(14) — 5.000 USDT\n"
+            f"[TF] EMA(10/21) ADX>25  — {capital_tf:,.0f} USDT\n"
+            f"[MR] BB(25/3.0) RSI(14) — {capital_mr:,.0f} USDT\n"
             f"Modus: PAPER (DRY_RUN=True)\n"
             f"Zeit:  {self.start_time.strftime('%Y-%m-%d %H:%M UTC')}"
         )
@@ -521,8 +526,11 @@ Beispiel:
         "--paper", action="store_true", required=True,
         help="Paper-Trading-Modus (PFLICHT — schützt vor versehentlichem Live-Handel)",
     )
-    parser.add_argument("--symbol",   default="BTC/USDT", help="Handelspaar (default: BTC/USDT)")
-    parser.add_argument("--strategy", default="portfolio",
+    _env_symbol   = os.getenv("SYMBOL",   "BTC/USDT").split()[0]
+    _env_strategy = os.getenv("STRATEGY", "portfolio")
+    parser.add_argument("--symbol",   default=_env_symbol,
+                        help=f"Handelspaar (default aus .env: {_env_symbol})")
+    parser.add_argument("--strategy", default=_env_strategy,
                         choices=["portfolio", "trend", "mean_reversion"],
                         help="Strategie-Modus: portfolio (beide) | trend | mean_reversion")
     args = parser.parse_args()
@@ -534,9 +542,9 @@ Beispiel:
 +============================================================+
     """)
     print(f"  Symbol:         {args.symbol}")
-    print(f"  [TF] EMA(10/21) | ADX>25  | Kapital: 5.000 USDT")
-    print(f"  [MR] BB(25/3.0) | RSI(14) | Kapital: 5.000 USDT")
-    print(f"  Gesamt:                     10.000 USDT")
+    print(f"  [TF] EMA(10/21) | ADX>25  | Kapital: {CFG['CAPITAL_TF']:,.0f} USDT")
+    print(f"  [MR] BB(25/3.0) | RSI(14) | Kapital: {CFG['CAPITAL_MR']:,.0f} USDT")
+    print(f"  Gesamt:                     {_START_CAPITAL:,.0f} USDT")
     print(f"  Circuit Breaker: {CFG['CIRCUIT_BREAKER_LOSSES']} kombinierte Verluste → beide stoppen")
     print(f"\n  ✅ DRY_RUN = True — kein echter Order möglich\n")
 

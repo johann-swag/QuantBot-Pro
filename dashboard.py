@@ -12,8 +12,9 @@
 import json
 import glob
 import os
+import socket
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 from flask import Flask, jsonify
 
@@ -23,6 +24,18 @@ LOG_DIR = Path("logs")
 # ============================================================
 # DATEN LADEN
 # ============================================================
+
+def load_env_config() -> dict:
+    for candidate in [Path("/opt/quantbot/.env"), Path(".env")]:
+        if candidate.exists():
+            cfg = {}
+            for line in candidate.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    cfg[k.strip()] = v.strip()
+            return cfg
+    return {}
 
 def load_backtest(symbol: str = "BTC_USDT") -> dict:
     path = LOG_DIR / f"backtest_{symbol}.json"
@@ -169,6 +182,28 @@ def api_walkforward():
         return jsonify({"error": "Keine Walk-Forward-Daten gefunden"}), 404
     return jsonify(build_wf_stats(raw))
 
+@app.route("/api/config")
+def api_config():
+    env  = load_env_config()
+    port = load_portfolio()
+    uptime_str = "—"
+    if port and port.get("start_time"):
+        try:
+            start = datetime.fromisoformat(port["start_time"])
+            secs  = int((datetime.now(timezone.utc) - start).total_seconds())
+            h, m  = secs // 3600, (secs % 3600) // 60
+            uptime_str = f"{h}h {m:02d}m"
+        except Exception:
+            pass
+    return jsonify({
+        "container":    socket.gethostname(),
+        "symbol":       env.get("SYMBOL", "BTC/USDT"),
+        "capital":      float(env.get("START_CAPITAL", 10000)),
+        "backtest_days": int(env.get("BACKTEST_DAYS", 0)),
+        "strategy":     env.get("STRATEGY", "portfolio"),
+        "uptime":       uptime_str,
+    })
+
 # ============================================================
 # HTML (inline — kein separates templates/ Verzeichnis nötig)
 # ============================================================
@@ -197,10 +232,13 @@ HTML = r"""<!DOCTYPE html>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
 
-  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
   header h1 { font-size: 18px; font-weight: 600; color: var(--accent); letter-spacing: .5px; }
   #refresh-info { color: var(--muted); font-size: 12px; }
   #last-updated { color: var(--text); }
+  #config-bar { width: 100%; background: rgba(99,102,241,.08); border: 1px solid rgba(99,102,241,.2); border-radius: 6px; padding: 6px 14px; font-size: 12px; color: var(--muted); display: flex; gap: 20px; flex-wrap: wrap; }
+  #config-bar span { white-space: nowrap; }
+  #config-bar b { color: var(--text); }
 
   main { padding: 24px; display: grid; gap: 20px; max-width: 1400px; margin: 0 auto; }
 
@@ -270,6 +308,14 @@ HTML = r"""<!DOCTYPE html>
 <header>
   <h1>⚡ QuantBot Pro Dashboard</h1>
   <div id="refresh-info">Auto-Refresh alle 30s &nbsp;|&nbsp; Zuletzt: <span id="last-updated">—</span></div>
+  <div id="config-bar">
+    <span>Container: <b id="cfg-container">—</b></span>
+    <span>Kapital: <b id="cfg-capital">—</b></span>
+    <span>Symbol: <b id="cfg-symbol">—</b></span>
+    <span>Strategie: <b id="cfg-strategy">—</b></span>
+    <span>Backtest: <b id="cfg-backtest">—</b></span>
+    <span>Laufzeit: <b id="cfg-uptime">—</b></span>
+  </div>
 </header>
 
 <main>
@@ -663,11 +709,28 @@ async function loadPortfolio() {
   }
 }
 
+// ── Config Info Bar ──────────────────────────────────────────
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/config')
+    if (!r.ok) return
+    const d = await r.json()
+    document.getElementById('cfg-container').textContent = d.container || '—'
+    document.getElementById('cfg-capital').textContent   = d.capital != null
+      ? d.capital.toLocaleString('de-DE') + ' USDT' : '—'
+    document.getElementById('cfg-symbol').textContent    = d.symbol || '—'
+    document.getElementById('cfg-strategy').textContent  = d.strategy || '—'
+    document.getElementById('cfg-backtest').textContent  = d.backtest_days > 0
+      ? d.backtest_days + ' Tage' : 'Kein Backtest'
+    document.getElementById('cfg-uptime').textContent    = d.uptime || '—'
+  } catch(e) { /* ignore */ }
+}
+
 // ── Init ─────────────────────────────────────────────────────
 async function init() {
   document.getElementById('last-updated').textContent =
     new Date().toLocaleTimeString('de-DE')
-  await Promise.all([loadBacktest(), loadWalkForward(), loadPortfolio()])
+  await Promise.all([loadBacktest(), loadWalkForward(), loadPortfolio(), loadConfig()])
 }
 
 init()
