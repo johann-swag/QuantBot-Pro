@@ -283,7 +283,6 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="refresh" content="30">
 <title>QuantBot Pro Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
@@ -1005,11 +1004,20 @@ function drawAdx(d) {
   })
 }
 
+// ── Live-Refresh (kein Seiten-Reload) ────────────────────────
+async function refreshMain() {
+  document.getElementById('last-updated').textContent =
+    new Date().toLocaleTimeString('de-DE')
+  await Promise.all([loadPortfolio(), loadConfig()])
+}
+
 // ── Init ─────────────────────────────────────────────────────
 async function init() {
   document.getElementById('last-updated').textContent =
     new Date().toLocaleTimeString('de-DE')
   await Promise.all([loadBacktest(), loadWalkForward(), loadPortfolio(), loadConfig()])
+  // Portfolio + Config alle 30s live aktualisieren ohne Seiten-Reload
+  setInterval(refreshMain, 30000)
 }
 
 init()
