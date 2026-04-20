@@ -17,6 +17,9 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 import csv as _csv
+import math
+import requests as _requests
+import pandas as _pd
 from datetime import timedelta
 from flask import Flask, jsonify, request
 
@@ -27,50 +30,130 @@ LOG_DIR = Path("logs")
 # DATEN LADEN
 # ============================================================
 
-def load_chart_data(range_str: str = "24h") -> dict | None:
-    cache_path = LOG_DIR / "ohlcv_cache.json"
-    if not cache_path.exists():
-        return None
+_TF_LIMITS = {
+    "1m": 120, "5m": 144, "15m": 96,
+    "1h": 72,  "4h": 42,  "1d":  90,
+}
+
+def _safe_num(v):
     try:
-        with open(cache_path) as f:
-            data = json.load(f)
+        x = float(v)
+        return None if math.isnan(x) or math.isinf(x) else round(x, 4)
     except Exception:
         return None
 
-    candles = data.get("candles", [])
+def _fetch_binance_ohlcv(symbol: str, interval: str, limit: int) -> list | None:
+    sym = symbol.replace("/", "")
+    try:
+        r = _requests.get(
+            "https://api.binance.com/api/v3/klines",
+            params={"symbol": sym, "interval": interval, "limit": limit},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return [
+            {"t": datetime.fromtimestamp(row[0] / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M"),
+             "c": float(row[4]), "h": float(row[2]),
+             "l": float(row[3]), "v": float(row[5])}
+            for row in r.json()
+        ]
+    except Exception:
+        return None
+
+def _compute_indicators(candles: list) -> list:
+    if not candles:
+        return candles
+    df = _pd.DataFrame(candles)
+    close = df["c"].astype(float)
+    high  = df["h"].astype(float)
+    low   = df["l"].astype(float)
+
+    e10 = close.ewm(span=10, adjust=False).mean()
+    e21 = close.ewm(span=21, adjust=False).mean()
+
+    bm  = close.rolling(20).mean()
+    bs  = close.rolling(20).std(ddof=0)
+    bbu = bm + 2 * bs
+    bbl = bm - 2 * bs
+
+    delta = close.diff()
+    gain  = delta.clip(lower=0).rolling(14).mean()
+    loss  = (-delta.clip(upper=0)).rolling(14).mean()
+    rsi   = 100 - (100 / (1 + gain / loss.replace(0, 1e-10)))
+
+    tr  = _pd.concat([high - low,
+                      (high - close.shift()).abs(),
+                      (low  - close.shift()).abs()], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/14, adjust=False).mean()
+    pdm = high.diff().clip(lower=0)
+    mdm = (-low.diff()).clip(lower=0)
+    pdm = pdm.where(high.diff() > (-low.diff()), 0.0)
+    mdm = mdm.where((-low.diff()) > high.diff(), 0.0)
+    pdi = 100 * pdm.ewm(alpha=1/14, adjust=False).mean() / atr.replace(0, 1e-10)
+    mdi = 100 * mdm.ewm(alpha=1/14, adjust=False).mean() / atr.replace(0, 1e-10)
+    dx  = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, 1e-10)
+    adx = dx.ewm(alpha=1/14, adjust=False).mean()
+
+    for i in range(len(candles)):
+        candles[i].update({
+            "e10": _safe_num(e10.iloc[i]), "e21": _safe_num(e21.iloc[i]),
+            "bbu": _safe_num(bbu.iloc[i]), "bbm": _safe_num(bm.iloc[i]),
+            "bbl": _safe_num(bbl.iloc[i]), "rsi": _safe_num(rsi.iloc[i]),
+            "adx": _safe_num(adx.iloc[i]),
+        })
+    return candles
+
+def load_chart_data(tf: str = "4h") -> dict | None:
+    limit  = _TF_LIMITS.get(tf, 42)
+    env    = load_env_config()
+    symbol = env.get("SYMBOL", "BTC/USDT").split()[0]
+
+    candles = _fetch_binance_ohlcv(symbol, tf, limit)
+
+    # Fallback: ohlcv_cache.json wenn Binance nicht erreichbar
+    if candles is None:
+        cache_path = LOG_DIR / "ohlcv_cache.json"
+        if cache_path.exists():
+            try:
+                with open(cache_path) as f:
+                    raw = json.load(f)
+                candles = [
+                    {"t": c["t"], "c": c.get("c", 0), "h": c.get("c", 0),
+                     "l": c.get("c", 0), "v": 0}
+                    for c in raw.get("candles", [])[-limit:]
+                ]
+            except Exception:
+                pass
+
     if not candles:
         return None
 
-    # Range filter (4h candles)
-    limit = {"24h": 6, "3d": 18, "7d": 42}.get(range_str)
-    if limit:
-        candles = candles[-limit:]
-
+    candles = _compute_indicators(candles)
     timestamps = [c["t"] for c in candles]
     ts_idx     = {t: i for i, t in enumerate(timestamps)}
 
     long_data = [None] * len(candles)
     exit_data = [None] * len(candles)
-    for date_dir in sorted(LOG_DIR.glob("????-??-??")):
-        sig_path = date_dir / "signals.csv"
-        if not sig_path.exists():
-            continue
-        with open(sig_path, newline="") as f:
-            for row in _csv.DictReader(f):
-                if row.get("signal_type") not in ("LONG", "SHORT"):
-                    continue
-                if row.get("blocked_by", "NONE") != "NONE":
-                    continue
-                idx = ts_idx.get(row["timestamp"][:16])
-                if idx is None:
-                    continue
-                price = candles[idx].get("c")
-                if price is None:
-                    continue
-                if row["signal_type"] == "LONG":
-                    long_data[idx] = price * 0.9975
-                else:
-                    exit_data[idx] = price * 1.0025
+    if tf in ("4h", "1h"):
+        for date_dir in sorted(LOG_DIR.glob("????-??-??")):
+            sig_path = date_dir / "signals.csv"
+            if not sig_path.exists():
+                continue
+            with open(sig_path, newline="") as f:
+                for row in _csv.DictReader(f):
+                    if row.get("signal_type") not in ("LONG", "SHORT"):
+                        continue
+                    if row.get("blocked_by", "NONE") != "NONE":
+                        continue
+                    idx = ts_idx.get(row["timestamp"][:16])
+                    if idx is None:
+                        continue
+                    price = candles[idx].get("c")
+                    if price:
+                        if row["signal_type"] == "LONG":
+                            long_data[idx] = price * 0.9975
+                        else:
+                            exit_data[idx] = price * 1.0025
 
     return {
         "timestamps":   timestamps,
@@ -245,10 +328,12 @@ def api_walkforward():
 
 @app.route("/api/chart-data")
 def api_chart_data():
-    range_str = request.args.get("range", "24h")
-    data = load_chart_data(range_str)
+    tf = request.args.get("tf", "4h")
+    if tf not in _TF_LIMITS:
+        tf = "4h"
+    data = load_chart_data(tf)
     if data is None:
-        return jsonify({"error": "Keine Chart-Daten verfügbar — Erster Datenpunkt nach der nächsten 4h-Kerze"}), 404
+        return jsonify({"error": "Keine Chart-Daten verfügbar"}), 404
     return jsonify(data)
 
 @app.route("/api/config")
@@ -497,10 +582,12 @@ HTML = r"""<!DOCTYPE html>
   <div class="chart-controls">
     <div class="chart-info">📡 Live-Daten aus market_snapshot.csv &nbsp;|&nbsp; <span id="chart-last-update">—</span></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap">
-      <button class="range-btn active" onclick="setRange('24h',this)">Letzte 24h</button>
-      <button class="range-btn"        onclick="setRange('3d',this)">3 Tage</button>
-      <button class="range-btn"        onclick="setRange('7d',this)">7 Tage</button>
-      <button class="range-btn"        onclick="setRange('all',this)">Alles</button>
+      <button class="range-btn"        onclick="setRange('1m', this)">1m</button>
+      <button class="range-btn"        onclick="setRange('5m', this)">5m</button>
+      <button class="range-btn"        onclick="setRange('15m',this)">15m</button>
+      <button class="range-btn"        onclick="setRange('1h', this)">1h</button>
+      <button class="range-btn active" onclick="setRange('4h', this)">4h</button>
+      <button class="range-btn"        onclick="setRange('1d', this)">1d</button>
     </div>
   </div>
 
@@ -881,19 +968,23 @@ function switchTab(id, btn) {
   btn.classList.add('active')
   if (id === 'tab-chart') {
     loadChart()
-    if (!chartTimer) chartTimer = setInterval(loadChart, 30000)
+    if (!chartTimer) chartTimer = setInterval(loadChart, TF_REFRESH[chartTf] || 30000)
   } else {
     clearInterval(chartTimer); chartTimer = null
   }
 }
 
-// ── Range Selector ────────────────────────────────────────────
-let chartRange = '24h'
+// ── Timeframe Selector ────────────────────────────────────────
+let chartTf = '4h'
+const TF_REFRESH = { '1m':10000, '5m':15000, '15m':20000, '1h':30000, '4h':60000, '1d':120000 }
 
-function setRange(r, btn) {
-  chartRange = r
+function setRange(tf, btn) {
+  chartTf = tf
   document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'))
   btn.classList.add('active')
+  // Restart timer with interval matching timeframe
+  clearInterval(chartTimer); chartTimer = null
+  chartTimer = setInterval(loadChart, TF_REFRESH[tf] || 30000)
   loadChart()
 }
 
@@ -917,7 +1008,7 @@ let priceInst = null, rsiInst = null, adxInst = null
 
 async function loadChart() {
   try {
-    const r = await fetch('/api/chart-data?range=' + chartRange)
+    const r = await fetch('/api/chart-data?tf=' + chartTf)
     if (!r.ok) { showChartEmpty(); return }
     const d = await r.json()
     if (d.error) { showChartEmpty(); return }
