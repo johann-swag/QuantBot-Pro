@@ -54,13 +54,14 @@ TF_PARAMS = {
     "EMA_FAST": 10, "EMA_SLOW": 21, "RSI_PERIOD": 10,
     "RSI_LONG_MIN": 48, "RSI_SHORT_MAX": 52,
     "ATR_PERIOD": 14, "ATR_MULTIPLIER": 2.0,
-    "ADX_PERIOD": 14, "ADX_THRESHOLD": 25,
+    "ADX_PERIOD": 14, "ADX_THRESHOLD": int(os.getenv("TF_ADX_THRESHOLD", 25)),
     "VOLUME_FACTOR": 1.2, "REWARD_RISK_RATIO": 1.5, "RISK_PER_TRADE_PCT": 0.01,
 }
 
 MR_PARAMS = {
-    "BB_PERIOD": 25, "BB_STD": 3.0, "RSI_PERIOD": 14,
-    "RSI_LONG": 25, "RSI_SHORT": 65,
+    "BB_PERIOD": 25, "BB_STD": float(os.getenv("MR_BB_STD", 3.0)), "RSI_PERIOD": 14,
+    "RSI_LONG":  int(os.getenv("MR_RSI_LONG",  25)),
+    "RSI_SHORT": int(os.getenv("MR_RSI_SHORT", 65)),
     "ATR_MULTIPLIER": 2.0, "REWARD_RISK_RATIO": 1.5, "RISK_PER_TRADE_PCT": 0.01,
 }
 
@@ -592,8 +593,8 @@ Beispiel:
 +============================================================+
     """)
     print(f"  Symbol:         {args.symbol}")
-    print(f"  [TF] EMA(10/21) | ADX>25  | Kapital: {CFG['CAPITAL_TF']:,.0f} USDT")
-    print(f"  [MR] BB(25/3.0) | RSI(14) | Kapital: {CFG['CAPITAL_MR']:,.0f} USDT")
+    print(f"  [TF] EMA(10/21) | ADX>{TF_PARAMS['ADX_THRESHOLD']}  | Kapital: {CFG['CAPITAL_TF']:,.0f} USDT")
+    print(f"  [MR] BB(25/{MR_PARAMS['BB_STD']}) | RSI Long<{MR_PARAMS['RSI_LONG']} Short>{MR_PARAMS['RSI_SHORT']} | Kapital: {CFG['CAPITAL_MR']:,.0f} USDT")
     print(f"  Gesamt:                     {_START_CAPITAL:,.0f} USDT")
     print(f"  Circuit Breaker: {CFG['CIRCUIT_BREAKER_LOSSES']} kombinierte Verluste → beide stoppen")
     print(f"\n  ✅ DRY_RUN = True — kein echter Order möglich\n")
