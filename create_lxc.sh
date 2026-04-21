@@ -180,13 +180,16 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-# Warte bis DNS funktioniert
-for i in $(seq 1 10); do
-    if pct exec $CTID -- ping -c1 api.binance.com &>/dev/null; then
-        echo "DNS OK"
+echo "Warte auf DNS..."
+sleep 30
+
+# DNS Test
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    if pct exec $CTID -- ping -c 1 api.binance.com > /dev/null 2>&1; then
+        echo "DNS OK nach ${i}x10s"
         break
     fi
-    echo "Warte auf DNS... ($i/10)"
+    echo "DNS noch nicht bereit... ($i/10)"
     sleep 10
 done
 
