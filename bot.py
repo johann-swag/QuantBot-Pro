@@ -1167,8 +1167,8 @@ if __name__ == "__main__":
     parser.add_argument("--days",     type=int,   default=365,      help="Backtest-Zeitraum in Tagen")
     parser.add_argument("--balance",  type=float, default=10_000.0, help="Startkapital")
     parser.add_argument("--strategy", default="trend",
-                        choices=["trend", "mean_reversion"],
-                        help="Strategie fuer Backtest: trend (default) | mean_reversion")
+                        choices=["trend", "mean_reversion", "scalping"],
+                        help="Strategie fuer Backtest: trend (default) | mean_reversion | scalping")
     args = parser.parse_args()
 
     print("""
@@ -1184,18 +1184,25 @@ if __name__ == "__main__":
         ex = ccxt.binance({"enableRateLimit": True})
 
         strategy_obj = None
+        backtest_tf  = CONFIG["TIMEFRAME"]
         if args.strategy == "mean_reversion":
             try:
-                import sys as _sys
-                _sys.path.insert(0, ".")
+                import sys as _sys; _sys.path.insert(0, ".")
                 from strategies.mean_reversion import MeanReversionStrategy
                 strategy_obj = MeanReversionStrategy()
             except ImportError as e:
-                print(f"Fehler beim Laden der Strategie: {e}")
-                sys.exit(1)
+                print(f"Fehler beim Laden der Strategie: {e}"); sys.exit(1)
+        elif args.strategy == "scalping":
+            try:
+                import sys as _sys; _sys.path.insert(0, ".")
+                from strategies.scalping import ScalpingStrategy
+                strategy_obj = ScalpingStrategy()
+                backtest_tf  = "1h"   # Scalping läuft auf 1h-Kerzen
+            except ImportError as e:
+                print(f"Fehler beim Laden der Strategie: {e}"); sys.exit(1)
 
         Backtester(ex, strategy=strategy_obj).run(
-            args.symbol, CONFIG["TIMEFRAME"], args.days, args.balance
+            args.symbol, backtest_tf, args.days, args.balance
         )
     elif args.paper:
         print("PAPER TRADING MODUS — Echte Live-Preise, simulierte Orders\n")

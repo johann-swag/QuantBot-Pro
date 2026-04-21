@@ -52,6 +52,7 @@ sys.path.insert(0, ".")
 try:
     from strategies.mean_reversion  import MeanReversionStrategy
     from strategies.trend_following import TrendFollowingStrategy
+    from strategies.scalping        import ScalpingStrategy
     _STRATEGIES_AVAILABLE = True
 except ImportError:
     _STRATEGIES_AVAILABLE = False
@@ -758,8 +759,8 @@ Beispiele:
     parser.add_argument("--all-symbols", action="store_true",             help="Alle Standard-Symbole testen")
     parser.add_argument("--optimize",    action="store_true",             help="Parameter-Sweep aktivieren")
     parser.add_argument("--strategy",    default="trend",
-                        choices=["trend", "mean_reversion"],
-                        help="Strategie: trend (default) | mean_reversion")
+                        choices=["trend", "mean_reversion", "scalping"],
+                        help="Strategie: trend (default) | mean_reversion | scalping (--timeframe 1h empfohlen)")
     args = parser.parse_args()
 
     print("""
@@ -787,6 +788,19 @@ Beispiele:
         )
         active_params = MR_BASE_CONFIG
         print(f"  Strategie: Mean Reversion (BB {MR_BASE_CONFIG['BB_PERIOD']}/{MR_BASE_CONFIG['BB_STD']}, RSI {MR_BASE_CONFIG['RSI_PERIOD']})")
+    elif args.strategy == "scalping":
+        if not _STRATEGIES_AVAILABLE:
+            print("  FEHLER: strategies/ Paket nicht gefunden. Abbruch.")
+            sys.exit(1)
+        active_strategy = ScalpingStrategy(verbose=True)
+        active_params   = {
+            "EMA_FAST": 5, "EMA_SLOW": 15, "RSI_PERIOD": 7,
+            "RSI_LONG_MIN": 45, "RSI_SHORT_MAX": 55,
+            "ADX_THRESHOLD": 15, "STOP_LOSS_PCT": 0.005, "TAKE_PROFIT_PCT": 0.010,
+        }
+        print(f"  Strategie: Scalping 1h (EMA 5/15, RSI 7, ADX>15, SL 0.5% TP 1.0%)")
+        if args.timeframe == "4h":
+            print("  HINWEIS: --timeframe 1h empfohlen für Scalping-Strategie")
     elif args.strategy == "trend":
         if _STRATEGIES_AVAILABLE:
             active_strategy = TrendFollowingStrategy(params=BASE_CONFIG, verbose=True)

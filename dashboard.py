@@ -53,8 +53,8 @@ def _fetch_binance_ohlcv(symbol: str, interval: str, limit: int) -> list | None:
         r.raise_for_status()
         return [
             {"t": datetime.fromtimestamp(row[0] / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M"),
-             "c": float(row[4]), "h": float(row[2]),
-             "l": float(row[3]), "v": float(row[5])}
+             "o": float(row[1]), "h": float(row[2]),
+             "l": float(row[3]), "c": float(row[4]), "v": float(row[5])}
             for row in r.json()
         ]
     except Exception:
@@ -157,7 +157,11 @@ def load_chart_data(tf: str = "4h") -> dict | None:
 
     return {
         "timestamps":   timestamps,
+        "open":         [c.get("o")   for c in candles],
+        "high":         [c.get("h")   for c in candles],
+        "low":          [c.get("l")   for c in candles],
         "close":        [c.get("c")   for c in candles],
+        "volume":       [c.get("v")   for c in candles],
         "ema_10":       [c.get("e10") for c in candles],
         "ema_21":       [c.get("e21") for c in candles],
         "bb_upper":     [c.get("bbu") for c in candles],
@@ -369,6 +373,7 @@ HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantBot Pro Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   :root {
     --bg:      #0f1117;
@@ -473,10 +478,10 @@ HTML = r"""<!DOCTYPE html>
   .chart-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-bottom: 8px; }
   .legend-item { display: flex; align-items: center; gap: 5px; }
   .legend-dot { display: inline-block; width: 10px; height: 3px; border-radius: 2px; }
-  .chart-price-wrap { position: relative; height: 340px; }
-  .chart-rsi-wrap, .chart-adx-wrap { position: relative; height: 150px; }
+  .lw-price { height: 360px; }
+  .lw-sub   { height: 150px; margin-top: 8px; }
   #tab-chart canvas { max-height: none !important; }
-  @media (max-width: 600px) { .chart-price-wrap { height: 240px; } .tab-btn { padding: 10px 12px; font-size: 13px; } }
+  @media (max-width: 600px) { .lw-price { height: 240px; } .tab-btn { padding: 10px 12px; font-size: 13px; } }
 </style>
 </head>
 <body>
@@ -597,29 +602,30 @@ HTML = r"""<!DOCTYPE html>
   </div>
 
   <div id="chart-content">
-    <!-- Preis-Chart -->
+    <!-- Preis + Volumen -->
     <div class="chart-card">
       <div class="chart-legend">
-        <span class="legend-item"><span class="legend-dot" style="background:#e2e8f0"></span>Close</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#22c55e"></span>Bullish</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>Bearish</span>
         <span class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>EMA 10</span>
         <span class="legend-item"><span class="legend-dot" style="background:#f97316"></span>EMA 21</span>
         <span class="legend-item"><span class="legend-dot" style="background:#64748b"></span>BB Bands</span>
         <span class="legend-item" style="color:#22c55e">▲ Long</span>
         <span class="legend-item" style="color:#ef4444">▼ Short/Exit</span>
       </div>
-      <div class="chart-price-wrap"><canvas id="priceChart"></canvas></div>
+      <div id="priceChart" class="lw-price"></div>
     </div>
 
     <!-- RSI -->
-    <div class="chart-card">
-      <div class="chart-card-title">RSI — Oversold &lt;25 (grün) · Overbought &gt;65 (rot)</div>
-      <div class="chart-rsi-wrap"><canvas id="rsiChart"></canvas></div>
+    <div class="chart-card" style="padding-top:12px">
+      <div class="chart-card-title">RSI — Oversold &lt;25 · Overbought &gt;65</div>
+      <div id="rsiChart" class="lw-sub"></div>
     </div>
 
     <!-- ADX -->
-    <div class="chart-card">
-      <div class="chart-card-title">ADX — Trendstärke (Threshold 25)</div>
-      <div class="chart-adx-wrap"><canvas id="adxChart"></canvas></div>
+    <div class="chart-card" style="padding-top:12px">
+      <div class="chart-card-title">ADX — Trendstärke · Threshold 25</div>
+      <div id="adxChart" class="lw-sub"></div>
     </div>
   </div>
 
@@ -988,24 +994,32 @@ function setRange(tf, btn) {
   loadChart()
 }
 
-// ── Chart Base Options ────────────────────────────────────────
-function baseOpts(yExtra = {}) {
-  return {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false,
-    interaction: { mode: 'index', intersect: false },
-    plugins: { legend: { display: false } },
-    scales: {
-      x: { ticks: { color: '#64748b', maxTicksLimit: 8, maxRotation: 0, font: { size: 10 } }, grid: { color: '#1f2230' } },
-      y: Object.assign({ ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#2a2d3a' } }, yExtra)
-    }
-  }
+// ── lightweight-charts Setup ──────────────────────────────────
+const LC = LightweightCharts
+let lwPrice = null, lwRsi = null, lwAdx = null
+
+const LW_THEME = {
+  layout:     { background: { color: '#1a1d26' }, textColor: '#94a3b8' },
+  grid:       { vertLines: { color: '#1f2230' }, horzLines: { color: '#1f2230' } },
+  crosshair:  { mode: LC.CrosshairMode.Normal },
+  rightPriceScale: { borderColor: '#2a2d3a' },
+  timeScale:  { borderColor: '#2a2d3a', timeVisible: true, secondsVisible: false },
+}
+
+// UTC timestamp → Unix seconds
+const toT = s => Math.floor(new Date(s + ':00Z').getTime() / 1000)
+
+function lwSparse(timestamps, arr) {
+  return timestamps.map((t, i) => arr[i] != null ? { time: toT(t), value: arr[i] } : null).filter(Boolean)
+}
+
+function lwDestroy() {
+  if (lwPrice) { lwPrice.remove(); lwPrice = null }
+  if (lwRsi)   { lwRsi.remove();   lwRsi   = null }
+  if (lwAdx)   { lwAdx.remove();   lwAdx   = null }
 }
 
 // ── Load + Draw ───────────────────────────────────────────────
-let priceInst = null, rsiInst = null, adxInst = null
-
 async function loadChart() {
   try {
     const r = await fetch('/api/chart-data?tf=' + chartTf)
@@ -1016,6 +1030,7 @@ async function loadChart() {
     document.getElementById('chart-content').style.display     = ''
     document.getElementById('chart-last-update').textContent   =
       'Aktualisiert: ' + new Date().toLocaleTimeString('de-DE')
+    lwDestroy()
     drawPrice(d)
     drawRsi(d)
     drawAdx(d)
@@ -1027,71 +1042,78 @@ function showChartEmpty() {
   document.getElementById('chart-content').style.display     = 'none'
 }
 
+function lwChart(elId, height) {
+  const el = document.getElementById(elId)
+  el.innerHTML = ''
+  const c = LC.createChart(el, { ...LW_THEME, autoSize: true, height })
+  return c
+}
+
 function drawPrice(d) {
-  const ctx = document.getElementById('priceChart').getContext('2d')
-  if (priceInst) priceInst.destroy()
-  const len = d.timestamps.length
-  priceInst = new Chart(ctx, {
-    type: 'line',
-    data: { labels: d.timestamps, datasets: [
-      // BB band fill area (upper→lower)
-      { label:'BB Upper', data: d.bb_upper,  borderColor:'rgba(100,116,139,.4)', borderWidth:1, backgroundColor:'rgba(100,116,139,.07)', fill:'+1', pointRadius:0, tension:.2 },
-      { label:'BB Lower', data: d.bb_lower,  borderColor:'rgba(100,116,139,.4)', borderWidth:1, fill:false, pointRadius:0, tension:.2 },
-      // BB middle dashed
-      { label:'BB Mid',   data: d.bb_middle, borderColor:'rgba(100,116,139,.35)', borderWidth:1, borderDash:[4,4], fill:false, pointRadius:0, tension:.2 },
-      // EMAs
-      { label:'EMA 10',  data: d.ema_10,  borderColor:'#3b82f6', borderWidth:1.5, fill:false, pointRadius:0, tension:.2 },
-      { label:'EMA 21',  data: d.ema_21,  borderColor:'#f97316', borderWidth:1.5, fill:false, pointRadius:0, tension:.2 },
-      // Close price
-      { label:'Close',   data: d.close,   borderColor:'#e2e8f0', borderWidth:2,   fill:false, pointRadius:0, tension:.1 },
-      // Signal markers — showLine:false = only points shown at non-null positions
-      { label:'Long',  data: d.long_signals, borderColor:'transparent', backgroundColor:'#22c55e', showLine:false, pointStyle:'triangle', pointRadius:9, rotation:0   },
-      { label:'Short', data: d.exit_signals, borderColor:'transparent', backgroundColor:'#ef4444', showLine:false, pointStyle:'triangle', pointRadius:9, rotation:180 },
-    ]},
-    options: baseOpts({ ticks: { color:'#64748b', font:{size:10}, callback: v => v.toFixed(0) } })
+  lwPrice = lwChart('priceChart', 360)
+
+  // Candlestick
+  const cs = lwPrice.addCandlestickSeries({
+    upColor: '#22c55e', downColor: '#ef4444',
+    borderUpColor: '#22c55e', borderDownColor: '#ef4444',
+    wickUpColor: '#22c55e', wickDownColor: '#ef4444',
   })
+  cs.setData(d.timestamps.map((t, i) => ({
+    time: toT(t), open: d.open[i], high: d.high[i], low: d.low[i], close: d.close[i]
+  })).filter(c => c.open != null))
+
+  // Volume (separate price scale)
+  const vs = lwPrice.addHistogramSeries({
+    priceFormat: { type: 'volume' }, priceScaleId: 'vol',
+  })
+  lwPrice.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } })
+  vs.setData(d.timestamps.map((t, i) => ({
+    time: toT(t),
+    value: d.volume?.[i] ?? 0,
+    color: (d.close[i] >= (d.open[i] ?? d.close[i])) ? 'rgba(34,197,94,.35)' : 'rgba(239,68,68,.35)',
+  })).filter(c => c.value > 0))
+
+  // EMA 10
+  lwPrice.addLineSeries({ color: '#3b82f6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
+    .setData(lwSparse(d.timestamps, d.ema_10))
+  // EMA 21
+  lwPrice.addLineSeries({ color: '#f97316', lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
+    .setData(lwSparse(d.timestamps, d.ema_21))
+  // BB Upper
+  lwPrice.addLineSeries({ color: 'rgba(100,116,139,.5)', lineWidth: 1, lineStyle: LC.LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false })
+    .setData(lwSparse(d.timestamps, d.bb_upper))
+  // BB Middle
+  lwPrice.addLineSeries({ color: 'rgba(100,116,139,.3)', lineWidth: 1, lineStyle: LC.LineStyle.Dotted, priceLineVisible: false, lastValueVisible: false })
+    .setData(lwSparse(d.timestamps, d.bb_middle))
+  // BB Lower
+  lwPrice.addLineSeries({ color: 'rgba(100,116,139,.5)', lineWidth: 1, lineStyle: LC.LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false })
+    .setData(lwSparse(d.timestamps, d.bb_lower))
+
+  // Signal markers
+  const markers = []
+  ;(d.long_signals || []).forEach((v, i) => {
+    if (v != null) markers.push({ time: toT(d.timestamps[i]), position: 'belowBar', color: '#22c55e', shape: 'arrowUp',   text: 'L' })
+  })
+  ;(d.exit_signals || []).forEach((v, i) => {
+    if (v != null) markers.push({ time: toT(d.timestamps[i]), position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: 'S' })
+  })
+  if (markers.length) cs.setMarkers(markers.sort((a, b) => a.time - b.time))
 }
 
 function drawRsi(d) {
-  const ctx = document.getElementById('rsiChart').getContext('2d')
-  if (rsiInst) rsiInst.destroy()
-  const len = d.timestamps.length
-  const fill25 = new Array(len).fill(25)
-  const fill65 = new Array(len).fill(65)
-  rsiInst = new Chart(ctx, {
-    type: 'line',
-    data: { labels: d.timestamps, datasets: [
-      // Oversold zone fill (bottom → 25)
-      { data: fill25, borderColor:'transparent', borderWidth:0, backgroundColor:'rgba(34,197,94,.08)', fill:'start', pointRadius:0 },
-      // Overbought zone fill (65 → top)
-      { data: fill65, borderColor:'transparent', borderWidth:0, backgroundColor:'rgba(239,68,68,.08)', fill:'end',   pointRadius:0 },
-      // RSI line
-      { label:'RSI', data: d.rsi, borderColor:'#a78bfa', borderWidth:1.5, fill:false, pointRadius:0, tension:.2 },
-      // Reference lines
-      { data: fill25, borderColor:'rgba(34,197,94,.6)',  borderWidth:1, borderDash:[4,4], fill:false, pointRadius:0 },
-      { data: fill65, borderColor:'rgba(239,68,68,.6)',  borderWidth:1, borderDash:[4,4], fill:false, pointRadius:0 },
-    ]},
-    options: baseOpts({ min:0, max:100, ticks:{ color:'#64748b', font:{size:10}, stepSize:25 } })
-  })
+  lwRsi = lwChart('rsiChart', 150)
+  lwRsi.priceScale('right').applyOptions({ minimum: 0, maximum: 100 })
+  const rs = lwRsi.addLineSeries({ color: '#a78bfa', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: true })
+  rs.setData(lwSparse(d.timestamps, d.rsi))
+  rs.createPriceLine({ price: 25, color: 'rgba(34,197,94,.7)', lineWidth: 1, lineStyle: LC.LineStyle.Dashed, axisLabelVisible: true, title: '25' })
+  rs.createPriceLine({ price: 65, color: 'rgba(239,68,68,.7)',  lineWidth: 1, lineStyle: LC.LineStyle.Dashed, axisLabelVisible: true, title: '65' })
 }
 
 function drawAdx(d) {
-  const ctx = document.getElementById('adxChart').getContext('2d')
-  if (adxInst) adxInst.destroy()
-  const len = d.timestamps.length
-  const fill25 = new Array(len).fill(25)
-  adxInst = new Chart(ctx, {
-    type: 'line',
-    data: { labels: d.timestamps, datasets: [
-      // Trend zone (above 25)
-      { data: fill25, borderColor:'transparent', borderWidth:0, backgroundColor:'rgba(34,197,94,.06)', fill:'end', pointRadius:0 },
-      // ADX line
-      { label:'ADX', data: d.adx, borderColor:'#fbbf24', borderWidth:1.5, fill:false, pointRadius:0, tension:.2 },
-      // Threshold
-      { data: fill25, borderColor:'rgba(34,197,94,.6)', borderWidth:1, borderDash:[4,4], fill:false, pointRadius:0 },
-    ]},
-    options: baseOpts({ min:0, ticks:{ color:'#64748b', font:{size:10} } })
-  })
+  lwAdx = lwChart('adxChart', 150)
+  const as = lwAdx.addLineSeries({ color: '#fbbf24', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: true })
+  as.setData(lwSparse(d.timestamps, d.adx))
+  as.createPriceLine({ price: 25, color: 'rgba(34,197,94,.7)', lineWidth: 1, lineStyle: LC.LineStyle.Dashed, axisLabelVisible: true, title: '25' })
 }
 
 // ── Live-Refresh (kein Seiten-Reload) ────────────────────────
