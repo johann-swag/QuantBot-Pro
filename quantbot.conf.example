@@ -1,0 +1,39 @@
+# ============================================================
+#  QuantBot Pro — Installations-Konfiguration
+#
+#  Verwendung:
+#    cp quantbot.conf.example quantbot.conf
+#    nano quantbot.conf          # eigene Werte eintragen
+#    bash install.sh             # liest quantbot.conf automatisch
+#
+#  Oder explizit:
+#    bash install.sh --config /pfad/zur/quantbot.conf
+#
+#  Alle Werte sind optional — fehlende Werte werden interaktiv abgefragt.
+# ============================================================
+
+# ── Telegram ─────────────────────────────────────────────────
+TELEGRAM_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
+TELEGRAM_CHAT_ID=1295319293
+
+# ── Binance API (leer lassen für Paper Trading) ───────────────
+BINANCE_API_KEY=
+BINANCE_API_SECRET=
+
+# ── Backtest ──────────────────────────────────────────────────
+# 90 / 365 / 730  (Tage)
+BACKTEST_DAYS=365
+
+# ── Kapital pro Container (USDT) ─────────────────────────────
+START_CAPITAL=10000
+
+# ── Handelspaar ───────────────────────────────────────────────
+# BTC/USDT  /  ETH/USDT  /  BTC/USDT ETH/USDT
+SYMBOL=BTC/USDT
+
+# ── Strategie-Parameter (werden in .env des Containers gesetzt) ─
+# Container 772 (Konservativ) — Defaults, normalerweise nicht ändern
+# Container 773 (Moderat) — wird von install.sh automatisch gesetzt
+TF_ADX_THRESHOLD=25
+MR_RSI_LONG=25
+MR_RSI_SHORT=65

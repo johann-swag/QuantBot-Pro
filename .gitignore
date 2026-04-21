@@ -1,6 +1,7 @@
 # KRITISCH: API-Keys niemals committen!
 .env
-
+quantbot.conf
+personal.md
 # Logs (enthalten Trade-Details und Equity-Daten)
 logs/
 *.jsonl

@@ -13,6 +13,28 @@ REPO_URL="https://raw.githubusercontent.com/johann-swag/QuantBot-Pro/main"
 SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo /tmp/quantbot-install)"
 PROXMOX_IP=$(hostname -I | awk '{print $1}')
 
+# ── Config-Datei laden (überschreibt ENV, wird von Prompts überschrieben) ──
+# Pfad: ./quantbot.conf  oder  /opt/quantbot.conf  oder  --config <pfad>
+CONFIG_FILE=""
+if [ "$1" = "--config" ] && [ -n "$2" ]; then
+    CONFIG_FILE="$2"
+elif [ -f "./quantbot.conf" ]; then
+    CONFIG_FILE="./quantbot.conf"
+elif [ -f "/opt/quantbot.conf" ]; then
+    CONFIG_FILE="/opt/quantbot.conf"
+fi
+
+if [ -n "$CONFIG_FILE" ]; then
+    echo "  → Lade Konfiguration aus: $CONFIG_FILE"
+    # Nur KEY=VALUE Zeilen laden, Kommentare (#) und Leerzeilen ignorieren
+    while IFS='=' read -r KEY VAL; do
+        [[ "$KEY" =~ ^#.*$ || -z "$KEY" ]] && continue
+        VAL="${VAL%%#*}"   # inline Kommentare entfernen
+        VAL="${VAL%"${VAL##*[![:space:]]}"}"  # trailing whitespace
+        export "$KEY"="$VAL"
+    done < "$CONFIG_FILE"
+fi
+
 # ── SCHRITT 1 — Banner ────────────────────────────────────────
 
 echo ""
