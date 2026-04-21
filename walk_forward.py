@@ -310,7 +310,7 @@ def simulate_window(
                     phase      = phase,
                 ))
                 if hit_sl:
-                    cooldown = params["LOSS_COOLDOWN_BARS"]
+                    cooldown = params.get("LOSS_COOLDOWN_BARS", 0)
                 position = None
             elif not has_band_exit:
                 # Trailing Stop nur für Trend-Following
@@ -332,11 +332,15 @@ def simulate_window(
             atr       = float(row["atr"])
             if atr <= 0:
                 continue
-            stop_dist = atr * params["ATR_MULTIPLIER"]
-            qty       = (balance * params["RISK_PER_TRADE_PCT"]) / stop_dist
-            sl  = price - stop_dist if direction == "LONG" else price + stop_dist
-            tp  = (price + stop_dist * params["REWARD_RISK_RATIO"] if direction == "LONG"
-                   else price - stop_dist * params["REWARD_RISK_RATIO"])
+            if strategy is not None:
+                pos = strategy.position_size(balance, price, atr, direction)
+                sl, tp, qty = pos["stop_loss"], pos["take_profit"], pos["quantity"]
+            else:
+                stop_dist = atr * params["ATR_MULTIPLIER"]
+                qty       = (balance * params["RISK_PER_TRADE_PCT"]) / stop_dist
+                sl  = price - stop_dist if direction == "LONG" else price + stop_dist
+                tp  = (price + stop_dist * params["REWARD_RISK_RATIO"] if direction == "LONG"
+                       else price - stop_dist * params["REWARD_RISK_RATIO"])
             if sl <= 0:
                 continue
             position = {
