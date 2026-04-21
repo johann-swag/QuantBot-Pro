@@ -19,53 +19,59 @@ echo "║   QuantBot Pro — LXC Creator             ║"
 echo "║   Container: $CTID | $HOSTNAME           ║"
 echo "╚══════════════════════════════════════════╝"
 
-# Eingaben
-read -s -p "Telegram Token (nur den Token-Wert): " TELEGRAM_TOKEN
-echo
-TELEGRAM_TOKEN="${TELEGRAM_TOKEN#*=}"
-read -p "Telegram Chat ID (nur die Zahl, z.B. 1295319293): " TELEGRAM_CHAT_ID
-TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID#*=}"
+# Eingaben — ENV-Vars überschreiben interaktive Prompts (gesetzt via install.sh)
+if [ -z "$TELEGRAM_TOKEN" ]; then
+    read -s -p "Telegram Token (nur den Token-Wert): " TELEGRAM_TOKEN
+    echo
+    TELEGRAM_TOKEN="${TELEGRAM_TOKEN#*=}"
+fi
+if [ -z "$TELEGRAM_CHAT_ID" ]; then
+    read -p "Telegram Chat ID (nur die Zahl, z.B. 1295319293): " TELEGRAM_CHAT_ID
+    TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID#*=}"
+fi
 
-echo ""
-echo "╔══════════════════════════════════════════╗"
-echo "║   QuantBot Pro — Setup Konfiguration     ║"
-echo "╚══════════════════════════════════════════╝"
+if [ -z "$BACKTEST_DAYS" ]; then
+    echo ""
+    echo "╔══════════════════════════════════════════╗"
+    echo "║   QuantBot Pro — Setup Konfiguration     ║"
+    echo "╚══════════════════════════════════════════╝"
+    echo ""
+    echo "Paper Trading Konfiguration:"
+    echo "  1) Schnelltest    — 90 Tage Backtest  (wenige Minuten)"
+    echo "  2) Standard       — 365 Tage Backtest (empfohlen)"
+    echo "  3) Langzeittest   — 730 Tage Backtest (dauert länger)"
+    echo "  4) Kein Backtest  — Dashboard startet leer"
+    echo ""
+    read -p "Wahl [1-4]: " BACKTEST_CHOICE
+    case $BACKTEST_CHOICE in
+        1) BACKTEST_DAYS=90 ;;
+        2) BACKTEST_DAYS=365 ;;
+        3) BACKTEST_DAYS=730 ;;
+        4) BACKTEST_DAYS=0 ;;
+        *) BACKTEST_DAYS=365 ;;
+    esac
+fi
 
-echo ""
-echo "Paper Trading Konfiguration:"
-echo "  1) Schnelltest    — 90 Tage Backtest  (wenige Minuten)"
-echo "  2) Standard       — 365 Tage Backtest (empfohlen)"
-echo "  3) Langzeittest   — 730 Tage Backtest (dauert länger)"
-echo "  4) Kein Backtest  — Dashboard startet leer"
-echo ""
-read -p "Wahl [1-4]: " BACKTEST_CHOICE
+if [ -z "$START_CAPITAL" ]; then
+    echo ""
+    read -p "Kapital in USDT [10000]: " START_CAPITAL
+    START_CAPITAL=${START_CAPITAL:-10000}
+fi
 
-case $BACKTEST_CHOICE in
-    1) BACKTEST_DAYS=90 ;;
-    2) BACKTEST_DAYS=365 ;;
-    3) BACKTEST_DAYS=730 ;;
-    4) BACKTEST_DAYS=0 ;;
-    *) BACKTEST_DAYS=365 ;;
-esac
-
-echo ""
-echo "Startkapital (Standard: 10000):"
-read -p "Kapital in USDT [10000]: " START_CAPITAL
-START_CAPITAL=${START_CAPITAL:-10000}
-
-echo ""
-echo "Symbol:"
-echo "  1) BTC/USDT (Standard)"
-echo "  2) ETH/USDT"
-echo "  3) BTC/USDT + ETH/USDT (Multi-Symbol)"
-read -p "Wahl [1-3]: " SYMBOL_CHOICE
-
-case $SYMBOL_CHOICE in
-    1) SYMBOL="BTC/USDT" ;;
-    2) SYMBOL="ETH/USDT" ;;
-    3) SYMBOL="BTC/USDT ETH/USDT" ;;
-    *) SYMBOL="BTC/USDT" ;;
-esac
+if [ -z "$SYMBOL" ]; then
+    echo ""
+    echo "Symbol:"
+    echo "  1) BTC/USDT (Standard)"
+    echo "  2) ETH/USDT"
+    echo "  3) BTC/USDT + ETH/USDT (Multi-Symbol)"
+    read -p "Wahl [1-3]: " SYMBOL_CHOICE
+    case $SYMBOL_CHOICE in
+        1) SYMBOL="BTC/USDT" ;;
+        2) SYMBOL="ETH/USDT" ;;
+        3) SYMBOL="BTC/USDT ETH/USDT" ;;
+        *) SYMBOL="BTC/USDT" ;;
+    esac
+fi
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
@@ -78,10 +84,12 @@ printf "║   Kapital:      %-25s║\n" "$START_CAPITAL USDT"
 printf "║   Backtest:     %-25s║\n" "$BACKTEST_DAYS Tage"
 echo "╚══════════════════════════════════════════╝"
 echo ""
-read -p "Starten? [j/n]: " CONFIRM
-if [ "$CONFIRM" != "j" ]; then
-    echo "Abgebrochen."
-    exit 0
+if [ "${AUTO_CONFIRM:-0}" != "1" ]; then
+    read -p "Starten? [j/n]: " CONFIRM
+    if [ "$CONFIRM" != "j" ]; then
+        echo "Abgebrochen."
+        exit 0
+    fi
 fi
 
 # Template prüfen
@@ -133,10 +141,15 @@ mkdir -p /opt/quantbot/logs
 cat > /opt/quantbot/.env << EOF
 TELEGRAM_TOKEN=$TELEGRAM_TOKEN
 TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID
+API_KEY=$BINANCE_API_KEY
+API_SECRET=$BINANCE_API_SECRET
 STRATEGY=$STRATEGY
 START_CAPITAL=$START_CAPITAL
 SYMBOL=$SYMBOL
 BACKTEST_DAYS=$BACKTEST_DAYS
+TF_ADX_THRESHOLD=${TF_ADX_THRESHOLD:-25}
+MR_RSI_LONG=${MR_RSI_LONG:-25}
+MR_RSI_SHORT=${MR_RSI_SHORT:-65}
 EOF
 
 # FIX 4: Service direkt schreiben statt cp
@@ -183,9 +196,9 @@ EOF
 echo "Warte auf DNS..."
 sleep 30
 
-# DNS Test
+# DNS Test (läuft im Container — kein pct nötig)
 for i in 1 2 3 4 5 6 7 8 9 10; do
-    if pct exec $CTID -- ping -c 1 api.binance.com > /dev/null 2>&1; then
+    if ping -c 1 api.binance.com > /dev/null 2>&1; then
         echo "DNS OK nach ${i}x10s"
         break
     fi
