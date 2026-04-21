@@ -812,6 +812,7 @@ def run_bot():
     exchange = ccxt.binance({
         "apiKey":          os.getenv("API_KEY", ""),
         "secret":          os.getenv("API_SECRET", ""),
+        "timeout":         10000,
         "enableRateLimit": True,
         "options":         {"defaultType": CONFIG["MARKET_TYPE"]},
     })
@@ -958,7 +959,7 @@ def run_paper_trading(symbol: str, start_balance: float = 10_000.0):
     logger    = StructuredLogger(CONFIG["LOG_DIR"], symbol)
     sig_gen   = SignalGenerator()
     ingestion = DataIngestion(
-        ccxt.binance({"enableRateLimit": True}),  # KEIN API-Key → read-only
+        ccxt.binance({"enableRateLimit": True, "timeout": 10000}),  # KEIN API-Key → read-only
         logger,
     )
 
@@ -1181,7 +1182,7 @@ if __name__ == "__main__":
 
     if args.backtest:
         print(f"Starte Backtest: {args.symbol} | {args.days} Tage | {args.balance:.0f} USDT\n")
-        ex = ccxt.binance({"enableRateLimit": True})
+        ex = ccxt.binance({"enableRateLimit": True, "timeout": 10000})
 
         strategy_obj = None
         backtest_tf  = CONFIG["TIMEFRAME"]

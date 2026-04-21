@@ -396,8 +396,9 @@ class PortfolioEngine:
             try:    return safe(row[c])
             except: return None
 
+        MAX_CACHE_SIZE = 500
         out = []
-        for ts in df_tf.index[-200:]:
+        for ts in df_tf.index[-MAX_CACHE_SIZE:]:
             rtf = df_tf.loc[ts]
             rmr = df_mr.loc[ts] if ts in df_mr.index else pd.Series(dtype=float)
             out.append({
@@ -492,7 +493,7 @@ class PortfolioEngine:
         self._save_trades()
 
         # Logging-System starten
-        self.logger = QuantBotLogger(exchange=self.exchange)
+        self.logger = QuantBotLogger(exchange=self.exchange, notifier=self.alert)
         self.logger.start_background_threads(self._get_portfolio_state)
 
         self._start_hourly_telegram()
@@ -613,7 +614,7 @@ Beispiel:
     ]
 
     alert    = TelegramAlert()
-    exchange = ccxt.binance({"enableRateLimit": True})
+    exchange = ccxt.binance({"enableRateLimit": True, "timeout": 10000})
 
     engine = PortfolioEngine(args.symbol, exchange, slots, alert)
 

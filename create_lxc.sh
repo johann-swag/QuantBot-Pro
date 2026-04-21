@@ -198,6 +198,9 @@ systemctl enable quantbot
 systemctl enable quantbot-dashboard
 systemctl start quantbot
 systemctl start quantbot-dashboard
+
+# Healthcheck Cronjob einrichten (alle 15 Minuten)
+(crontab -l 2>/dev/null; echo "*/15 * * * * /opt/quantbot/healthcheck.sh >> /opt/quantbot/logs/healthcheck.log 2>&1") | crontab -
 SCRIPT
 
 # FIX 6: IP aus dem Container holen

@@ -18,12 +18,16 @@
 
 import csv
 import json
+import os
+import sys
 import time
 import threading
 import urllib.request
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Callable, Optional
+
+_RAM_WARN_MB = 400
 
 import pandas as pd
 
@@ -86,8 +90,9 @@ class QuantBotLogger:
     starten via start_background_threads().
     """
 
-    def __init__(self, exchange=None):
+    def __init__(self, exchange=None, notifier=None):
         self.exchange        = exchange
+        self._notifier       = notifier
         self._active_trades  = {}          # trade_id → tracking-dict
         self._error_count    = 0
         self._last_error     = ""
@@ -418,6 +423,16 @@ class QuantBotLogger:
                             cpu_pct = round(proc.cpu_percent(interval=0.5), 2)
                         except Exception:
                             pass
+
+                    if ram_mb is not None and ram_mb > _RAM_WARN_MB:
+                        msg = f"⚠️ RAM kritisch: {ram_mb:.0f}MB — Bot wird neu gestartet"
+                        print(f"  [Logger] {msg}", flush=True)
+                        if self._notifier:
+                            try:
+                                self._notifier.send(msg)
+                            except Exception:
+                                pass
+                        sys.exit(1)
 
                     if self.exchange:
                         try:
