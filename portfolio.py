@@ -615,7 +615,7 @@ Beispiel:
     ]
 
     alert    = TelegramAlert()
-    exchange = ccxt.binance({"enableRateLimit": True, "timeout": 10000})
+    exchange = ccxt.binance({"enableRateLimit": True, "timeout": 10000, "options": {"defaultType": "spot"}})
 
     engine = PortfolioEngine(args.symbol, exchange, slots, alert)
 

@@ -107,7 +107,7 @@ pct create $CTID $TEMPLATE \
 # Starten
 pct start $CTID
 echo "Warte auf Container..."
-sleep 10
+sleep 30
 
 # Setup im Container
 echo "Installiere QuantBot..."
@@ -179,6 +179,16 @@ RestartSec=10
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# Warte bis DNS funktioniert
+for i in $(seq 1 10); do
+    if pct exec $CTID -- ping -c1 api.binance.com &>/dev/null; then
+        echo "DNS OK"
+        break
+    fi
+    echo "Warte auf DNS... ($i/10)"
+    sleep 10
+done
 
 if [ $BACKTEST_DAYS -gt 0 ]; then
     echo "Generiere initiale Backtest-Daten ($BACKTEST_DAYS Tage)..."
