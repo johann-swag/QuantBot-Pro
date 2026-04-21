@@ -24,10 +24,15 @@ if [ -z "$TELEGRAM_TOKEN" ]; then
     read -s -p "Telegram Token (nur den Token-Wert): " TELEGRAM_TOKEN
     echo
     TELEGRAM_TOKEN="${TELEGRAM_TOKEN#*=}"
+else
+    echo "  Telegram Token:   aus ENV ✓"
 fi
+
 if [ -z "$TELEGRAM_CHAT_ID" ]; then
     read -p "Telegram Chat ID (nur die Zahl, z.B. 1295319293): " TELEGRAM_CHAT_ID
     TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID#*=}"
+else
+    echo "  Telegram Chat ID: aus ENV ✓"
 fi
 
 if [ -z "$BACKTEST_DAYS" ]; then
@@ -50,12 +55,16 @@ if [ -z "$BACKTEST_DAYS" ]; then
         4) BACKTEST_DAYS=0 ;;
         *) BACKTEST_DAYS=365 ;;
     esac
+else
+    echo "  Backtest:         $BACKTEST_DAYS Tage (aus ENV) ✓"
 fi
 
 if [ -z "$START_CAPITAL" ]; then
     echo ""
     read -p "Kapital in USDT [10000]: " START_CAPITAL
     START_CAPITAL=${START_CAPITAL:-10000}
+else
+    echo "  Kapital:          $START_CAPITAL USDT (aus ENV) ✓"
 fi
 
 if [ -z "$SYMBOL" ]; then
@@ -71,6 +80,8 @@ if [ -z "$SYMBOL" ]; then
         3) SYMBOL="BTC/USDT ETH/USDT" ;;
         *) SYMBOL="BTC/USDT" ;;
     esac
+else
+    echo "  Symbol:           $SYMBOL (aus ENV) ✓"
 fi
 
 echo ""
