@@ -26,12 +26,19 @@ fi
 
 if [ -n "$CONFIG_FILE" ]; then
     echo "  → Lade Konfiguration aus: $CONFIG_FILE"
-    # Nur KEY=VALUE Zeilen laden, Kommentare (#) und Leerzeilen ignorieren
-    while IFS='=' read -r KEY VAL; do
-        [[ "$KEY" =~ ^#.*$ || -z "$KEY" ]] && continue
-        VAL="${VAL%%#*}"   # inline Kommentare entfernen
-        VAL="${VAL%"${VAL##*[![:space:]]}"}"  # trailing whitespace
-        export "$KEY"="$VAL"
+    # Nur KEY=VALUE Zeilen laden — Kommentare und Leerzeilen ignorieren
+    while read -r LINE; do
+        # Kommentare und Leerzeilen überspringen
+        case "$LINE" in
+            '#'*|'') continue ;;
+        esac
+        KEY="${LINE%%=*}"
+        VAL="${LINE#*=}"
+        VAL="${VAL%%#*}"          # inline Kommentare entfernen
+        VAL="${VAL#"${VAL%%[! ]*}"}"  # führende Leerzeichen
+        VAL="${VAL%"${VAL##*[! ]}"}"  # trailing Leerzeichen
+        [ -z "$KEY" ] && continue
+        declare -x "$KEY"="$VAL"
     done < "$CONFIG_FILE"
 fi
 
@@ -67,14 +74,11 @@ if ! pveam list local 2>/dev/null | grep -q "ubuntu-22.04"; then
 fi
 echo "  ✓ Ubuntu 22.04 Template vorhanden"
 
-# create_lxc.sh verfügbar machen
-if [ ! -f "$SCRIPT_DIR/create_lxc.sh" ]; then
-    echo "  Lade create_lxc.sh..."
-    mkdir -p "$SCRIPT_DIR"
-    curl -fsSL "$REPO_URL/create_lxc.sh" -o "$SCRIPT_DIR/create_lxc.sh"
-    chmod +x "$SCRIPT_DIR/create_lxc.sh"
-fi
-echo "  ✓ create_lxc.sh bereit"
+# create_lxc.sh immer frisch laden — nie gecachte alte Version verwenden
+mkdir -p "$SCRIPT_DIR"
+curl -fsSL "$REPO_URL/create_lxc.sh" -o "$SCRIPT_DIR/create_lxc.sh"
+chmod +x "$SCRIPT_DIR/create_lxc.sh"
+echo "  ✓ create_lxc.sh bereit (aktuell)"
 echo ""
 
 # ── SCHRITT 3 — Globale Konfiguration ────────────────────────
@@ -251,7 +255,18 @@ for C in "${CONTAINERS[@]}"; do
     export MR_RSI_LONG=$CRSI_L
     export MR_RSI_SHORT=$CRSI_S
 
-    bash "$SCRIPT_DIR/create_lxc.sh" "$CTID" "$CHOST" "$CSTRAT"
+    env TELEGRAM_TOKEN="$TELEGRAM_TOKEN" \
+        TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID" \
+        BINANCE_API_KEY="$BINANCE_API_KEY" \
+        BINANCE_API_SECRET="$BINANCE_API_SECRET" \
+        BACKTEST_DAYS="$BACKTEST_DAYS" \
+        START_CAPITAL="$START_CAPITAL" \
+        SYMBOL="$SYMBOL" \
+        TF_ADX_THRESHOLD="$CADX" \
+        MR_RSI_LONG="$CRSI_L" \
+        MR_RSI_SHORT="$CRSI_S" \
+        AUTO_CONFIRM=1 \
+        bash "$SCRIPT_DIR/create_lxc.sh" "$CTID" "$CHOST" "$CSTRAT"
 
     IP=$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}')
     CONTAINER_IPS[$CTID]=$IP
